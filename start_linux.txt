@@ -1,0 +1,379 @@
+====================================================================
+ILD-OHIF-Tool — Linux local run guide (bash)
+====================================================================
+Written for this machine: Ubuntu 26.04, repo at
+/home/aihn/Documents/Github/ILD-SemiSegTool, NVIDIA RTX 3060.
+
+This adapts start.txt (Windows/PowerShell) and start_app.sh (which is
+actually a macOS/Colima script, despite living in this repo) to plain
+Linux + Docker. Differences from those two, discovered by inspecting
+this checkout, are called out inline.
+
+FAST PATH: setup_linux.sh in this repo automates all of steps 0-2
+below (Orthanc, conda, Python packages, model weight symlinks) and is
+safe to re-run. From the repo root:  ./setup_linux.sh
+It does not touch the OHIF viewer (step 5) — that's Node/yarn, kept
+separate since it's a much slower, more failure-prone install. The
+manual steps below are for understanding what it does / doing it by
+hand / troubleshooting.
+
+Known state of this checkout already verified:
+  - plugins/ohifv3/Viewers is already present, committed directly in
+    this repo (it is NOT its own git clone/submodule here).
+  - extensions/monai-label and modes/monai-label under Viewers are
+    already regular files identical to plugins/ohifv3/extensions and
+    modes/monai-label — NOT symlinks/junctions. You do not need to
+    create them (skip that part of start.txt's step 5a).
+  - plugins/ohifv3/extensions.patch applies as a 0-file no-op against
+    this checkout — it's already satisfied. Skip "git apply".
+  - platform/app/public/config/monai_label.js already matches
+    plugins/ohifv3/config/monai_label.js — already copied.
+  - So the real one-time setup is just: get a working Python env,
+    install MONAI Label + nnU-Net + MedSAM2, link in the model
+    weights, and `yarn install` the OHIF viewer.
+
+
+0. Prerequisites check
+--------------------------------------------------------------------
+  nvidia-smi                     # confirm GPU + driver are visible
+  docker ps                      # if "permission denied": your user
+                                  # is in the docker group already
+                                  # (getent group docker) but the
+                                  # current shell predates that — log
+                                  # out/in (or `newgrp docker`) and
+                                  # retry.
+
+IMPORTANT — Python version: the system default is python3.14, which
+is too new. monailabel pulls in numpymaxflow, which pins
+numpy==1.26.0, and there is no numpy 1.26 wheel for Python 3.14 (pip
+install monailabel will fail while building numpymaxflow). Use a
+conda env pinned to Python 3.10 instead of the system interpreter —
+mirrors the "monai081" conda env used on the original Windows setup.
+
+  If conda/miniconda isn't installed yet:
+    curl -o ~/miniconda.sh https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
+    bash ~/miniconda.sh -b -p ~/miniconda3
+    ~/miniconda3/bin/conda init bash
+    # open a new terminal after this so `conda` is on PATH
+
+  First `conda create`/`conda install` on a fresh install will hit a
+  Terms-of-Service gate on the default channels:
+    CondaToSNonInteractiveError: Terms of Service have not been
+    accepted for the following channels...
+  Accept it once (unrelated to this repo, just a new Anaconda policy):
+    conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main
+    conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
+
+
+1. Orthanc (DICOM server) — via Docker
+--------------------------------------------------------------------
+No native Windows-service equivalent needed; run it as a container
+(same image start_app.sh uses on macOS, just without Colima — Docker
+runs natively on Linux):
+
+  docker run -d --name orthanc \
+    -p 8042:8042 -p 4242:4242 \
+    -e DICOM_WEB_PLUGIN_ENABLED=true \
+    -e ORTHANC__AUTHENTICATION_ENABLED=false \
+    orthancteam/orthanc
+
+Check it's up:
+  docker ps --filter name=orthanc
+  curl -s http://localhost:8042/system
+
+Next time, instead of `docker run` (which only works once):
+  docker start orthanc
+
+
+2. Python env + MONAI Label server
+--------------------------------------------------------------------
+  cd /home/aihn/Documents/Github/ILD-SemiSegTool
+  conda create -n ild-ohif python=3.10 -y
+  conda activate ild-ohif
+
+  # PyTorch — plain `pip install torch` already resolves to a CUDA-enabled
+  # build (verified: got 2.14.0+cu130, torch.cuda.is_available() == True on
+  # this machine's driver). Only add --index-url if you specifically need
+  # an older CUDA runtime (see https://pytorch.org).
+  pip install torch
+  python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"
+
+  # Core server + nnU-Net
+  pip install monailabel nnunetv2
+
+  # This repo's extra requirements (adds MedSAM2 for the sam2_* models)
+  pip install -r radiology/requirements.txt
+  # MedSAM2's declared numpy>=2.0.1 floor conflicts with pydicom-seg's
+  # and numpymaxflow's numpy<2.0 ceiling (both real deps here — pulled
+  # in by monailabel, not MedSAM2). Per the comment at the top of
+  # radiology/requirements.txt, put numpy back down after:
+  pip install "numpy==1.26.4" --no-deps
+  # Without this, the server fails at startup two different ways:
+  #   ModuleNotFoundError: numpy.core.multiarray failed to import
+  #   (numpymaxflowcpp is a compiled extension built against the
+  #   numpy<2 ABI — this is a binary incompatibility, not a Python one)
+
+  # pydicom_seg 0.4.1 (unmaintained upstream) still imports
+  # `pydicom._storage_sopclass_uids`, a module pydicom 3.0 removed —
+  # you'll otherwise hit this at server startup:
+  #   ModuleNotFoundError: No module named 'pydicom._storage_sopclass_uids'
+  # Do NOT downgrade pydicom to work around it — dicomweb-client and
+  # pynetdicom (both pulled in by monailabel) require pydicom>=3 and
+  # genuinely use its newer API (e.g. pydicom.encaps.parse_basic_offsets
+  # doesn't exist in 2.x), so a downgrade just trades one ImportError
+  # for another. Patch the two files instead — SegmentationStorage
+  # lives at pydicom.uid in both the old and new pydicom:
+  PYDICOM_SEG_DIR="$(python -c 'import site; print(site.getsitepackages()[0])')/pydicom_seg"
+  sed -i 's/from pydicom\._storage_sopclass_uids import SegmentationStorage/from pydicom.uid import SegmentationStorage/' \
+    "$PYDICOM_SEG_DIR/reader.py" "$PYDICOM_SEG_DIR/segmentation_dataset.py"
+
+  # MedSAM2's pip build doesn't ship its Hydra config yamls. Copy them
+  # in by hand (only needed once per env):
+  git clone --depth 1 https://github.com/bowang-lab/MedSAM2.git /tmp/MedSAM2
+  cp /tmp/MedSAM2/sam2/configs/*.yaml "$(python -c 'import sam2, os; print(os.path.dirname(sam2.__file__))')/configs/"
+  rm -rf /tmp/MedSAM2
+
+Verify before moving on:
+  python -c "import torch; print(torch.cuda.is_available())"      # True
+  python -c "import monailabel.app"                                 # no errors
+
+Model weights — the radiology app looks for weights under
+radiology/model/ (gitignored; not in this git repo). The unzipped
+Annotation_Tool_Test_Data/model_weights/ next to this repo already
+has them. Symlink them in rather than copying (saves ~5GB and time):
+
+  cd /home/aihn/Documents/Github/ILD-SemiSegTool
+  mkdir -p radiology/model
+  ln -s "$(pwd)/Annotation_Tool_Test_Data/model_weights/nnUNet_results" radiology/model/nnUNet_results
+  mkdir -p radiology/model/sam2
+  ln -s "$(pwd)/Annotation_Tool_Test_Data/model_weights/MedSAM2+nnUnet_results/Full Finetune_b4e60/checkpoint_best_val.pt" radiology/model/sam2/checkpoint_ild.pt
+
+  # Verify the paths each model config expects actually resolve:
+  ls radiology/model/nnUNet_results/Dataset001_Lung/nnUNetTrainer__nnUNetPlans__3d_fullres/fold_0/checkpoint_final.pth
+  ls radiology/model/nnUNet_results/Dataset003_ILD_raw/nnUNetTrainer__nnUNetPlans__3d_fullres/fold_0/checkpoint_final.pth
+  ls radiology/model/sam2/checkpoint_ild.pt
+
+Note: there's no lung-specific SAM2 checkpoint in the test data (only
+the ILD one). That's fine — lib/configs/sam2_lung.py checks
+os.path.exists() and just omits the sam2_lung model if its checkpoint
+is missing, rather than erroring. Drop --conf models sam2_lung below,
+or add radiology/model/sam2/checkpoint_lung.pt later if you get one.
+
+Start the server:
+
+  cd /home/aihn/Documents/Github/ILD-SemiSegTool
+  conda activate ild-ohif
+  python -m monailabel.main start_server --app radiology --studies http://localhost:8042/dicom-web --conf models nnunet_lung,nnunet_ild,sam2_ild
+
+Wait for: Uvicorn running on http://0.0.0.0:8000
+("nnUNet_raw/_preprocessed/_results is not defined" warnings on
+startup are expected and harmless — the model paths are passed
+directly, not via those env vars.)
+
+Keep this terminal open — closing it stops the server.
+
+
+3. Open the viewer (production build, once built — see step 6)
+--------------------------------------------------------------------
+Browse to http://localhost:8000/ohif/
+Studies already uploaded to Orthanc are listed automatically.
+
+
+4. Upload a new study
+--------------------------------------------------------------------
+Go to http://localhost:8042/ui/app/, click Upload, drag in .dcm
+files or a .zip of the study folder. Appears immediately, no restart.
+
+
+5. Dev workflow — hot-reload (for editing the extension)
+--------------------------------------------------------------------
+5a. One-time setup
+The clone/checkout/symlink/patch/config-copy steps from start.txt's
+5a are already done in this checkout (see the note at the top). All
+that's left is installing JS deps:
+
+  cd /home/aihn/Documents/Github/ILD-SemiSegTool/plugins/ohifv3/Viewers
+
+  # yarn isn't on PATH but corepack (bundled with Node) will fetch
+  # the exact pinned version (package.json: "packageManager":
+  # "yarn@1.22.22") the first time it's invoked:
+  corepack enable
+  yarn config set workspaces-experimental true
+  yarn install
+
+Use Node 20.x (nvm's default here, v20.20.2, is what's verified
+working). Do NOT use the Node version this repo's own .node-version
+file pins (18.16.1) — that pin is stale: a transitive dependency
+(brace-expansion@5.0.9, pulled in by the current yarn.lock) requires
+Node >=20, and `yarn install` fails outright on Node 18 with:
+  error brace-expansion@5.0.9: The engine "node" is incompatible...
+
+Alternative — build_ohif_docker.sh at the repo root runs `yarn
+install` + the production build (step 6) inside a pinned Node 20
+container, so you don't need Node/yarn installed on the host at all.
+Same command works unchanged on Windows/macOS/Linux, since this half
+of the stack (unlike the GPU backend) has no OS-specific dependency.
+
+(patch-package reapplies the cornerstonejs hover-hitzone patch
+automatically via the "postinstall" script during yarn install.)
+
+5b. Run the dev server (needs the MONAI Label server from step 2
+    running in another terminal)
+
+  cd /home/aihn/Documents/Github/ILD-SemiSegTool/plugins/ohifv3/Viewers/platform/app
+  NODE_ENV=development APP_CONFIG=config/monai_label.js OHIF_PORT=3002 \
+  PROXY_TARGET=/proxy/dicom PROXY_DOMAIN=http://localhost:8000 \
+  PROXY_PATH_REWRITE_FROM=/proxy/dicom PROXY_PATH_REWRITE_TO=/proxy/dicom \
+  npx webpack-dev-server --config .webpack/webpack.pwa.js
+
+(The PROXY_* vars matter — config/monai_label.js's DICOMweb URLs are
+/proxy/dicom/wado, /proxy/dicom/qido etc, so the dev server needs to
+know to proxy those through to the MONAI Label server on :8000.
+start.txt's Windows version omits them; keep them here.)
+
+Browse to http://localhost:3002/ohif/ once it says "compiled
+successfully". Edits under extensions/monai-label/src recompile
+automatically.
+
+
+6. Deploy local changes to :8000/ohif/ (production build)
+--------------------------------------------------------------------
+Step 3's viewer serves a separately built copy — it does NOT pick up
+edits under extensions/monai-label or modes/monai-label on its own.
+Run this to rebuild and push your changes there. This is also what
+gets you a working :8000/ohif/ the very first time (there is no
+prebuilt copy in this checkout yet).
+
+Only needed when you want changes live on :8000, not for every edit
+— use the hot-reload dev server (step 5) for day-to-day work.
+
+Verified end-to-end on this machine: the build below produces a
+correctly minified dist/ (hashed bundle filenames, ~15MB app bundle),
+and after deploying it, http://localhost:8000/ohif/ returns 200 with
+the OHIF app-config.js also reachable.
+
+  cd /home/aihn/Documents/Github/ILD-SemiSegTool/plugins/ohifv3/Viewers/platform/app
+  NODE_ENV=production APP_CONFIG=config/monai_label.js \
+  PUBLIC_URL=/ohif/ QUICK_BUILD=true \
+  yarn run build
+
+  conda activate ild-ohif
+  MONAILABEL_SITE_PACKAGES="$(python -c 'import monailabel, os; print(os.path.dirname(os.path.dirname(monailabel.__file__)))')"
+  rm -rf "$MONAILABEL_SITE_PACKAGES/monailabel/endpoints/static/ohif"
+  cp -r dist "$MONAILABEL_SITE_PACKAGES/monailabel/endpoints/static/ohif"
+
+Then restart the MONAI Label server (step 2). Skip "yarn install"
+here — it's slow and only needed if package.json/yarn.lock changed.
+
+Or, without Node/yarn on the host at all:
+  ./build_ohif_docker.sh
+then run the same "conda activate ... cp -r dist ..." deploy snippet
+above (the script prints it too).
+
+
+7. Troubleshooting
+--------------------------------------------------------------------
+- "Load Segmentation" in the OHIF panel fails with a network-error-
+  looking message ("Failed to list saved segmentations: ..."): stock
+  monailabel has no /datastore/label/list endpoint, which that picker
+  needs — setup_linux.sh's step 5 now patches it in automatically
+  (radiology/patch_monailabel_datastore.py). If your env predates that
+  patch, rerun setup_linux.sh (idempotent), or just:
+    conda activate ild-ohif
+    python radiology/patch_monailabel_datastore.py
+  then restart the MONAI Label server (step 2). Re-run this any time
+  after `pip install --upgrade monailabel` too, since the patch lives
+  in the installed package and an upgrade overwrites it.
+
+- `pip install monailabel` fails building numpymaxflow with a numpy
+  version error: you're on the system Python (3.14 here), not the
+  conda env. `conda activate ild-ohif` first (see step 2).
+
+- `docker: permission denied while trying to connect to the docker
+  API`: your user is already in the docker group but the current
+  shell was opened before that took effect. Log out/in, or run
+  `newgrp docker` in the current shell, then retry.
+
+- "CLI for webpack must be installed" during build:
+  Don't let it auto-install via npm — it errors on this repo's
+  pre-existing peer-dep conflicts. Instead:
+
+    cd /home/aihn/Documents/Github/ILD-SemiSegTool/plugins/ohifv3/Viewers
+    yarn add -D webpack-cli@^5 -W
+
+- Hovering the edge of a Rectangle/Freehand ROI doesn't glow like a
+  point handle does: this needs the
+  "@cornerstonejs+tools+2.2.3.patch" file (widens the hover hit-zone
+  from 6px to 10px) to have been applied. It auto-applies via the
+  "postinstall" script every time "yarn install" runs (patch-package).
+  If it's missing after setup, reapply manually:
+
+    cd /home/aihn/Documents/Github/ILD-SemiSegTool/plugins/ohifv3/Viewers
+    npx patch-package
+
+- Build output looks stale / your fixes aren't showing up:
+  Unlike the Windows setup, extensions/monai-label and modes/monai-label
+  here are real files already in sync with plugins/ohifv3/extensions
+  and modes/monai-label (see the note at the top) — there's no
+  junction to check. Just confirm you're editing the files under
+  Viewers/extensions/monai-label/src (that's what the dev server and
+  build actually read), not the ones directly under plugins/ohifv3/.
+
+- Rebuild finishes suspiciously fast (a few seconds) and the app is
+  still blank / index.html looks unminified with a plain "app.js"
+  script tag (no hash): stale webpack cache produced a broken
+  index.html. Clear it and rebuild:
+
+    rm -rf /home/aihn/Documents/Github/ILD-SemiSegTool/plugins/ohifv3/Viewers/node_modules/.cache
+    rm -rf /home/aihn/Documents/Github/ILD-SemiSegTool/plugins/ohifv3/Viewers/platform/app/node_modules/.cache
+    rm -rf /home/aihn/Documents/Github/ILD-SemiSegTool/plugins/ohifv3/Viewers/platform/app/dist
+
+  Then rerun step 6's build. A clean build takes about a minute.
+
+- GPU not used / torch.cuda.is_available() is False: plain `pip
+  install torch` should already pick a CUDA-enabled build, but if it
+  didn't (e.g. a CPU-only wheel got resolved), reinstall pointing at
+  a specific CUDA index from https://pytorch.org — anything at or
+  below what nvidia-smi's "CUDA Version" reports works, drivers are
+  backward compatible.
+
+- `error brace-expansion@5.0.9: The engine "node" is incompatible`
+  during `yarn install`: you're on Node 18 (this repo's own
+  .node-version file, which is stale). Switch to Node 20+
+  (`nvm install 20 && nvm use 20`) or use build_ohif_docker.sh, which
+  already pins Node 20.
+
+
+8. Shut down
+--------------------------------------------------------------------
+Ctrl+C the MONAI Label server terminal, and the dev-server terminal
+if you started one. Leave the Orthanc container running — it's
+idle/lightweight when not in use:
+
+  docker stop orthanc     # only if you actually want it down too
+
+
+9. Other machines
+--------------------------------------------------------------------
+setup_windows.ps1 and setup_mac.sh do the same backend setup (steps
+0-2 here) for those OSes — same underlying pip packages, same fixes,
+adapted to each OS's conventions (Windows: junctions instead of
+symlinks for the weights directory, a plain copy for the single
+checkpoint file since Windows file-symlinks need admin rights; macOS:
+Colima instead of native Docker, matching start_app.sh). They were
+written from this verified Linux run, not independently tested on
+those OSes — start there, fall back to start.txt (Windows) or this
+file's troubleshooting section if something differs.
+
+build_ohif_docker.sh (step 5/6's Docker path) needs no such
+adaptation — it's the same command on all three OSes.
+
+
+10. Housekeeping (optional)
+--------------------------------------------------------------------
+Annotation_Tool_Test_Data.zip (~5.5GB) sits alongside the already
+-unzipped Annotation_Tool_Test_Data/ folder that step 2 symlinks
+weights from. If you don't need the archive itself, removing it frees
+~5.5GB:
+
+  rm /home/aihn/Documents/Github/ILD-SemiSegTool/Annotation_Tool_Test_Data.zip

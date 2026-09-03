@@ -19,6 +19,7 @@ import AutoSegmentation from './actions/AutoSegmentation';
 import SemiSegmentation from './actions/SemiSegmentation';
 import ClassPrompts from './actions/ClassPrompts';
 import ActiveLearning from './actions/ActiveLearning';
+import RegionalStats from './actions/RegionalStats';
 import MonaiLabelClient from '../services/MonaiLabelClient';
 import { hideNotification, getLabelColor, describeError } from '../utils/GenericUtils';
 import { Enums } from '@cornerstonejs/tools';
@@ -80,6 +81,7 @@ export default class MonaiLabelPanel extends Component<any, any> {
     segmentation: any;
     semisegmentation: any;
     classprompts: any;
+    regionalstats: any;
   };
   serverURI = 'http://127.0.0.1:8000';
   // Tracked purely for the Save Segmentation dialog's auto-filled "Model"
@@ -99,6 +101,7 @@ export default class MonaiLabelPanel extends Component<any, any> {
       segmentation: React.createRef(),
       semisegmentation: React.createRef(),
       classprompts: React.createRef(),
+      regionalstats: React.createRef(),
     };
 
     this.state = {
@@ -928,6 +931,16 @@ export default class MonaiLabelPanel extends Component<any, any> {
               servicesManager={this.props.servicesManager}
               commandsManager={this.props.commandsManager}
               onModelUsed={this.onModelUsed}
+            />
+            <RegionalStats
+              ref={this.actions['regionalstats']}
+              tabIndex={5}
+              info={this.state.info}
+              client={this.client}
+              setBusy={(busy: boolean) => this.setBusy('regionalstats', busy)}
+              isBusy={!!this.state.busyActions['regionalstats']}
+              onSelectActionTab={this.onSelectActionTab}
+              getActiveViewportInfo={this.getActiveViewportInfo}
             />
           </div>
         )}

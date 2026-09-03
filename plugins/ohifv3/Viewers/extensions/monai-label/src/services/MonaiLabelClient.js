@@ -124,6 +124,23 @@ export default class MonaiLabelClient {
     return await MonaiLabelClient.api_get_data(url, 'json');
   }
 
+  // Combines the latest saved lung + ILD-class segmentations for this
+  // image into 12-region (side x zone x depth) volumetric statistics -
+  // see radiology/lib/regional_stats.py. A 422 response means one of the
+  // two required saves (nnunet_lung, nnunet_ild/sam2_ild) doesn't exist
+  // yet for this image; that's a normal response to check for, not a
+  // thrown error.
+  async regional_stats(image, peripheralDistanceMm) {
+    let url = new URL('datastore/label/regional_stats', this.server_url);
+    url.searchParams.append('image', image);
+    if (peripheralDistanceMm) {
+      url.searchParams.append('peripheral_distance_mm', peripheralDistanceMm);
+    }
+    url = url.toString();
+
+    return await MonaiLabelClient.api_get_data(url, 'json');
+  }
+
   async is_train_running() {
     let url = new URL('train/', this.server_url);
     url.searchParams.append('check_if_running', 'true');

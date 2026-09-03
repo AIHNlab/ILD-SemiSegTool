@@ -1,0 +1,26 @@
+# Builds the OHIF viewer (dist/) without needing Node/yarn installed on the
+# host — same image/behavior on Windows, macOS, and Linux. No GPU involved,
+# so this (unlike the MONAI Label backend) genuinely runs identically
+# everywhere Docker does. See build_ohif_docker.sh at the repo root.
+#
+# NOTE: Viewers/.node-version says 18.16.1, but that's stale — a transitive
+# dependency (brace-expansion@5.0.9, pulled in by the current yarn.lock)
+# requires Node >=20. Verified by testing: the build fails under 18.16.1
+# ("error brace-expansion@5.0.9: The engine 'node' is incompatible") and
+# succeeds under 20.x.
+FROM node:20-bullseye
+
+WORKDIR /viewers
+RUN corepack enable
+
+# HOME must be writable by whatever UID docker run --user passes in (so
+# yarn's cache dir works and node_modules isn't left root-owned on the
+# host bind mount).
+ENV HOME=/tmp
+
+CMD ["sh", "-c", "\
+  yarn config set workspaces-experimental true && \
+  yarn install && \
+  cd platform/app && \
+  NODE_ENV=production APP_CONFIG=config/monai_label.js PUBLIC_URL=/ohif/ QUICK_BUILD=true yarn run build \
+"]
