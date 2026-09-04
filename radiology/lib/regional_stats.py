@@ -9,6 +9,18 @@ lib/infers/sam2_interactive.py), so a lung save and an ILD save for the
 same source image always share identical spacing/origin/direction - no
 registration step is needed here, just a geometry equality check.
 
+IMPORTANT - a saved label's voxel indices do NOT match a model config's
+fixed `labels` dict (e.g. nnunet_lung.py's `{"lung": 1}`). The OHIF viewer
+keeps one shared, session-global segmentation across every model/tab (see
+MonaiLabelPanel.tsx's onInfo/updateView - this is what makes undo/redo and
+multi-model workflows possible), so a class's voxel index is assigned
+dynamically per session and can be completely different from the backend
+model's own numbering. What IS reliable is `info["classes"]`
+(MonaiLabelPanel.tsx's onClickSaveSegmentation), recorded at save time as
+the class names actually present in that save, sorted ascending by their
+live voxel index - see `_class_index_map` below, which reconstructs the
+true index->name mapping from that instead of trusting any fixed config.
+
 The "% affected" figure is intentionally pluggable (see `region_scorer`
 below): the interim implementation derives it by counting ILD-mask voxels
 per region, but this is meant to be swapped later for a call to a
@@ -17,6 +29,7 @@ image data, without touching the region-splitting logic (steps 1-7).
 """
 
 import logging
+from datetime import datetime
 from typing import Callable, Dict, List, Optional
 
 import numpy as np
@@ -31,6 +44,19 @@ ILD_MODELS = {"nnunet_ild", "sam2_ild"}
 ZONES = ["lower", "middle", "upper"]
 DEPTHS = ["central", "peripheral"]
 SIDES = ["left", "right"]
+
+# compute_regional_stats always pairs the MOST RECENTLY SAVED lung segmentation
+# with the most recently saved ILD segmentation - independently of each other,
+# and independently of whatever was just run in the current session. Running
+# only one model (e.g. just nnunet_lung) still produces a result by silently
+# falling back to an older ILD save. This threshold flags that situation
+# (`stale_pairing_warning` in the response) rather than fixing it silently -
+# the caller decides whether a stale pairing is actually a problem.
+STALE_PAIRING_SECONDS = 6 * 3600
+
+
+def _format_ts(ts) -> Optional[str]:
+    return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M") if ts else None
 
 
 def _latest_tag_for_models(datastore, image: str, model_names) -> Optional[str]:
@@ -52,6 +78,29 @@ def _read_oriented(datastore, image: str, tag: str) -> sitk.Image:
     orienter = sitk.DICOMOrientImageFilter()
     orienter.SetDesiredCoordinateOrientation("LPS")
     return orienter.Execute(img)
+
+
+def _class_index_map(info: Dict, arr: np.ndarray, tag: str) -> Dict[int, str]:
+    """Reconstructs the true voxel-index -> class-name mapping for one saved
+    label (see the module docstring for why this can't just be read off a
+    model config). `info["classes"]` lists the class names actually present
+    in this save, already sorted ascending by their live voxel index
+    (MonaiLabelPanel.tsx's onClickSaveSegmentation) - zipping that against
+    the save's own sorted distinct nonzero voxel values recovers the mapping
+    exactly as it was at save time, with no dependency on any model config.
+    """
+    names = info.get("classes")
+    if not names:
+        raise ValueError(
+            f"Saved label '{tag}' has no recorded class names - it may predate the save/load feature"
+        )
+    values = sorted(int(v) for v in np.unique(arr) if v != 0)
+    if len(values) != len(names):
+        raise ValueError(
+            f"Saved label '{tag}' lists {len(names)} class name(s) {names} but has "
+            f"{len(values)} distinct voxel value(s) {values} in the file - can't reliably match them up"
+        )
+    return dict(zip(values, names))
 
 
 def score_region_by_segmentation(
@@ -106,6 +155,11 @@ def compute_regional_stats(
     lung_info = datastore.get_label_info(image, lung_tag)
     ild_info = datastore.get_label_info(image, ild_tag)
 
+    lung_ts, ild_ts = lung_info.get("ts"), ild_info.get("ts")
+    stale_pairing_warning = (
+        lung_ts is not None and ild_ts is not None and abs(lung_ts - ild_ts) > STALE_PAIRING_SECONDS
+    )
+
     lung_img = _read_oriented(datastore, image, lung_tag)
     ild_img = _read_oriented(datastore, image, ild_tag)
 
@@ -133,23 +187,30 @@ def compute_regional_stats(
     spacing_zyx = (spacing_xyz[2], spacing_xyz[1], spacing_xyz[0])
     voxel_volume_ml = (spacing_xyz[0] * spacing_xyz[1] * spacing_xyz[2]) / 1000.0
 
-    lung_arr = sitk.GetArrayFromImage(lung_img) > 0  # (z, y, x) bool
+    lung_arr_raw = sitk.GetArrayFromImage(lung_img)  # (z, y, x) int
     ild_arr = sitk.GetArrayFromImage(ild_img).astype(np.int32)
     ct_arr = sitk.GetArrayFromImage(ct_img)
 
-    if ct_arr.shape != lung_arr.shape:
+    if ct_arr.shape != lung_arr_raw.shape:
         raise ValueError(
             f"Source image and lung save '{lung_tag}' have different geometry "
-            f"({ct_arr.shape} vs {lung_arr.shape}) - the image may have been re-converted since saving"
+            f"({ct_arr.shape} vs {lung_arr_raw.shape}) - the image may have been re-converted since saving"
         )
 
-    if not lung_arr.any():
+    if not lung_arr_raw.any():
         raise ValueError(f"Saved lung segmentation '{lung_tag}' is empty")
 
-    model_config = app.models.get(ild_info.get("model"))
-    if model_config is None or not getattr(model_config, "labels", None):
-        raise ValueError(f"Could not resolve ILD class labels for model '{ild_info.get('model')}'")
-    classes: Dict[int, str] = {index: name for name, index in model_config.labels.items()}
+    lung_index_map = _class_index_map(lung_info, lung_arr_raw, lung_tag)
+    lung_name_to_index = {name.lower(): index for index, name in lung_index_map.items()}
+    lung_index = lung_name_to_index.get("lung")
+    if lung_index is None:
+        raise ValueError(
+            f"Saved label '{lung_tag}' doesn't contain a 'lung' class "
+            f"(found: {list(lung_index_map.values())})"
+        )
+    lung_arr = lung_arr_raw == lung_index  # (z, y, x) bool
+
+    classes = _class_index_map(ild_info, ild_arr, ild_tag)
 
     # Left/right split at the lung mask's own bounding-box x-midpoint.
     # LPS orientation guarantees increasing x-index = more Left.
@@ -221,6 +282,9 @@ def compute_regional_stats(
         "image": image,
         "lung_tag": lung_tag,
         "ild_tag": ild_tag,
+        "lung_saved_at": _format_ts(lung_ts),
+        "ild_saved_at": _format_ts(ild_ts),
+        "stale_pairing_warning": stale_pairing_warning,
         "peripheral_distance_mm": peripheral_distance_mm,
         "classes": list(classes.values()),
         "regions": regions,

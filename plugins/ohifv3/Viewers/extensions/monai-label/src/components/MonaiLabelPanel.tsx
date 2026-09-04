@@ -941,6 +941,7 @@ export default class MonaiLabelPanel extends Component<any, any> {
               isBusy={!!this.state.busyActions['regionalstats']}
               onSelectActionTab={this.onSelectActionTab}
               getActiveViewportInfo={this.getActiveViewportInfo}
+              servicesManager={this.props.servicesManager}
             />
           </div>
         )}

@@ -14,8 +14,14 @@ limitations under the License.
 import React, { forwardRef, useImperativeHandle, useState } from 'react';
 import { useActionTab, ActionTabProps } from './useActionTab';
 import { hideNotification, describeError, getLabelColor } from '../../utils/GenericUtils';
+import { currentSegmentsInfo } from '../../utils/SegUtils';
 import './BaseTab.css';
 import './RegionalStats.css';
+
+// Same shared, single labelmap segmentation every other tab in this panel
+// reads/writes (see MonaiLabelPanel.tsx's getLabelmapVolume('1') and friends
+// - there's no dynamic lookup anywhere else in this extension either).
+const SEGMENTATION_ID = '1';
 
 // Not a real segmentation class (see radiology/lib/regional_stats.py's
 // "unclassified" bucket) so it has no entry in the app's shared anatomy
@@ -118,6 +124,9 @@ const RegionalStats = forwardRef<any, ActionTabProps>((props, ref) => {
   const [result, setResult] = useState<any>(null);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [showTable, setShowTable] = useState(false);
+  // Absent/true = visible; only explicit `false` entries hide a class - lets
+  // a fresh compute show everything without pre-populating this per class.
+  const [hiddenClasses, setHiddenClasses] = useState<Record<string, boolean>>({});
 
   // Same no-op transition handling as the other action tabs (e.g.
   // AutoSegmentation) - MonaiLabelPanel calls these unconditionally when the
@@ -157,6 +166,7 @@ const RegionalStats = forwardRef<any, ActionTabProps>((props, ref) => {
 
       setResult(response.data);
       setExpanded({});
+      setHiddenClasses({});
     } catch (e) {
       hideNotification(nid, notification);
       notification.show({
@@ -171,9 +181,38 @@ const RegionalStats = forwardRef<any, ActionTabProps>((props, ref) => {
   };
 
   const columns = result?.regions?.length ? Object.keys(result.regions[0].class_percent) : [];
+  const visibleColumns = columns.filter((name) => !hiddenClasses[name]);
 
   const regionKey = (r) => `${r.side}-${r.zone}-${r.depth}`;
   const toggleRegion = (key) => setExpanded((prev) => ({ ...prev, [key]: !prev[key] }));
+
+  // Unchecking a class here isn't just a display filter for this tab - it
+  // also hides that class's real segment in the viewport (every viewport
+  // showing this segmentation, so this stays consistent across the 3-panel
+  // MPR layout), and re-checking shows it again. "unclassified" (and any
+  // other name with no live segment - e.g. from an older save whose classes
+  // aren't the ones currently loaded) has nothing to toggle in the viewport,
+  // so it only affects this tab's own display, same as before.
+  const toggleClassVisible = (name) => {
+    const willBeHidden = !hiddenClasses[name];
+    const segmentationService = props.servicesManager?.services?.segmentationService;
+    const segmentIndex = segmentationService
+      ? currentSegmentsInfo(segmentationService).info[name]?.segmentIndex
+      : undefined;
+    if (segmentationService && segmentIndex !== undefined) {
+      segmentationService
+        .getViewportIdsWithSegmentation(SEGMENTATION_ID)
+        .forEach((viewportId) => {
+          segmentationService.setSegmentVisibility(
+            viewportId,
+            SEGMENTATION_ID,
+            segmentIndex,
+            !willBeHidden
+          );
+        });
+    }
+    setHiddenClasses((prev) => ({ ...prev, [name]: willBeHidden }));
+  };
 
   return (
     <div className="tab">
@@ -202,9 +241,14 @@ const RegionalStats = forwardRef<any, ActionTabProps>((props, ref) => {
         {result && (
           <>
             <p className="regionalStatsCaption">
-              Computed from lung=<b>{result.lung_tag}</b>, ILD=<b>{result.ild_tag}</b> (peripheral
-              &nbsp;≤&nbsp;{result.peripheral_distance_mm}mm)
+              Lung saved <b>{result.lung_saved_at}</b>, ILD saved <b>{result.ild_saved_at}</b>
+              &nbsp;(peripheral&nbsp;≤&nbsp;{result.peripheral_distance_mm}mm)
             </p>
+            {result.stale_pairing_warning && (
+              <p className="regionalStatsStaleWarning">
+                ⚠ Lung/ILD saves are far apart in time — may not be a matched pair.
+              </p>
+            )}
             <button
               className="regionalStatsViewToggle"
               onClick={() => setShowTable((v) => !v)}
@@ -219,7 +263,7 @@ const RegionalStats = forwardRef<any, ActionTabProps>((props, ref) => {
                     <tr>
                       <th>Region</th>
                       <th>Lung Vol (mL)</th>
-                      {columns.map((c) => (
+                      {visibleColumns.map((c) => (
                         <th key={c}>{cap(c)}</th>
                       ))}
                     </tr>
@@ -231,7 +275,7 @@ const RegionalStats = forwardRef<any, ActionTabProps>((props, ref) => {
                           {cap(region.side)} / {cap(region.zone)} / {cap(region.depth)}
                         </td>
                         <td>{region.lung_volume_ml.toFixed(1)}</td>
-                        {columns.map((c) => (
+                        {visibleColumns.map((c) => (
                           <td key={c}>{formatPercent(region.class_percent[c])}</td>
                         ))}
                       </tr>
@@ -257,7 +301,7 @@ const RegionalStats = forwardRef<any, ActionTabProps>((props, ref) => {
                               <RegionRow
                                 key={key}
                                 region={region}
-                                columns={columns}
+                                columns={visibleColumns}
                                 expanded={!!expanded[key]}
                                 onToggle={() => toggleRegion(key)}
                               />
@@ -271,13 +315,18 @@ const RegionalStats = forwardRef<any, ActionTabProps>((props, ref) => {
 
                 <div className="regionalStatsLegend">
                   {columns.map((name) => (
-                    <span className="regionalStatsLegendItem" key={name}>
+                    <label className="regionalStatsLegendItem" key={name}>
+                      <input
+                        type="checkbox"
+                        checked={!hiddenClasses[name]}
+                        onChange={() => toggleClassVisible(name)}
+                      />
                       <span
                         className="segColor"
                         style={{ backgroundColor: classColor(name), height: 10, width: 10 }}
                       />
                       {cap(name)}
-                    </span>
+                    </label>
                   ))}
                 </div>
               </>
