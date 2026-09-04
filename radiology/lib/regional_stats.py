@@ -109,11 +109,18 @@ def compute_regional_stats(
     lung_img = _read_oriented(datastore, image, lung_tag)
     ild_img = _read_oriented(datastore, image, ild_tag)
 
-    if lung_img.GetSize() != ild_img.GetSize() or lung_img.GetSpacing() != ild_img.GetSpacing():
+    if (
+        lung_img.GetSize() != ild_img.GetSize()
+        or lung_img.GetSpacing() != ild_img.GetSpacing()
+        or lung_img.GetOrigin() != ild_img.GetOrigin()
+        or lung_img.GetDirection() != ild_img.GetDirection()
+    ):
         raise ValueError(
             f"Lung save '{lung_tag}' and ILD save '{ild_tag}' have different geometry "
             f"(size {lung_img.GetSize()} vs {ild_img.GetSize()}, "
-            f"spacing {lung_img.GetSpacing()} vs {ild_img.GetSpacing()}) - "
+            f"spacing {lung_img.GetSpacing()} vs {ild_img.GetSpacing()}, "
+            f"origin {lung_img.GetOrigin()} vs {ild_img.GetOrigin()}, "
+            f"direction {lung_img.GetDirection()} vs {ild_img.GetDirection()}) - "
             "they must be saved from the same source image"
         )
 
