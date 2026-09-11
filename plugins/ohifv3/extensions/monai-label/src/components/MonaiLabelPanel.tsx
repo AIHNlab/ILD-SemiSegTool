@@ -20,6 +20,7 @@ import SemiSegmentation from './actions/SemiSegmentation';
 import ClassPrompts from './actions/ClassPrompts';
 import ActiveLearning from './actions/ActiveLearning';
 import RegionalStats from './actions/RegionalStats';
+import Preprocessing from './actions/Preprocessing';
 import MonaiLabelClient from '../services/MonaiLabelClient';
 import { hideNotification, getLabelColor, describeError } from '../utils/GenericUtils';
 import { Enums } from '@cornerstonejs/tools';
@@ -82,6 +83,7 @@ export default class MonaiLabelPanel extends Component<any, any> {
     semisegmentation: any;
     classprompts: any;
     regionalstats: any;
+    preprocessing: any;
   };
   serverURI = 'http://127.0.0.1:8000';
   // Tracked purely for the Save Segmentation dialog's auto-filled "Model"
@@ -102,6 +104,7 @@ export default class MonaiLabelPanel extends Component<any, any> {
       semisegmentation: React.createRef(),
       classprompts: React.createRef(),
       regionalstats: React.createRef(),
+      preprocessing: React.createRef(),
     };
 
     this.state = {
@@ -942,6 +945,16 @@ export default class MonaiLabelPanel extends Component<any, any> {
               onSelectActionTab={this.onSelectActionTab}
               getActiveViewportInfo={this.getActiveViewportInfo}
               servicesManager={this.props.servicesManager}
+            />
+            <Preprocessing
+              ref={this.actions['preprocessing']}
+              tabIndex={6}
+              info={this.state.info}
+              client={this.client}
+              setBusy={(busy: boolean) => this.setBusy('preprocessing', busy)}
+              isBusy={!!this.state.busyActions['preprocessing']}
+              onSelectActionTab={this.onSelectActionTab}
+              getActiveViewportInfo={this.getActiveViewportInfo}
             />
           </div>
         )}
