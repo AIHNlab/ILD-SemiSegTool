@@ -15,6 +15,12 @@ extension needs that stock monailabel doesn't provide:
    actual computation lives in lib/regional_stats.py (in this repo, so
    it's reviewable/testable); this just wires up the thin HTTP route.
 
+3. PUT /datastore/image/preprocess?image=<id> - the "Preprocessing" tab's
+   "Preprocess Volume" button resamples the image to 1mm isotropic spacing
+   and crops it to the body bounding box, in place, using the functions in
+   preprocessing/preprocess_test_ct.py (also in this repo). The actual
+   logic lives in lib/preprocess.py; this wires up the HTTP route.
+
 Each patch lives outside site-packages (there's no vendored monailabel
 fork), so it's applied here instead - idempotent, safe to re-run,
 including after a monailabel upgrade that overwrites previously-applied
@@ -79,6 +85,32 @@ async def api_regional_stats(
     try:
         return regional_stats(image, peripheral_distance_mm)
     except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+{ROUTE_ANCHOR}""",
+    },
+    {
+        "marker": "/image/preprocess",
+        "function_insertion": FUNCTION_ANCHOR
+        + """
+
+def preprocess_image(image: str) -> Dict[str, Any]:
+    instance: MONAILabelApp = app_instance()
+    from lib.preprocess import preprocess_image as run_preprocess
+
+    return run_preprocess(instance, image)
+""",
+        "route_insertion": f"""@router.put(
+    "/image/preprocess", summary=f"{{RBAC_ANNOTATOR}}Preprocess Image (resample + crop to body bbox)"
+)
+async def api_preprocess_image(
+    image: str,
+    user: User = Depends(RBAC(settings.MONAI_LABEL_AUTH_ROLE_ANNOTATOR)),
+):
+    try:
+        return preprocess_image(image)
+    except Exception as e:
         raise HTTPException(status_code=422, detail=str(e))
 
 

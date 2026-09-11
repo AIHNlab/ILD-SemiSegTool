@@ -5,18 +5,6 @@ import SimpleITK as sitk
 from tqdm import tqdm
 from scipy.ndimage import label
 
-parser = argparse.ArgumentParser(description="Crop CT volumes to the body bounding box and resample to isotropic spacing.")
-parser.add_argument("--input_dir", required=True, help="Directory containing input *.nii.gz CT volumes")
-parser.add_argument("--output_dir", required=True, help="Directory to write cropped *.nii.gz CT volumes")
-args = parser.parse_args()
-
-input_dir = args.input_dir
-output_dir = args.output_dir
-
-os.makedirs(output_dir, exist_ok=True)
-
-print("🚀 Starting cropping...")
-
 
 def trim_air(ct, air_threshold=-950, min_fraction=0.8):
     """
@@ -126,54 +114,72 @@ def resample_to_spacing(img, new_spacing=(1.0, 1.0, 1.0)):
 
 
 # =========================
-# MAIN LOOP
+# SINGLE-VOLUME PIPELINE
 # =========================
-files = sorted([f for f in os.listdir(input_dir) if f.endswith(".nii.gz")])
+def preprocess_ct_image(img: sitk.Image, target_spacing=(1.0, 1.0, 1.0)) -> sitk.Image:
+    """Resample to isotropic spacing, then crop to the body bounding box.
 
-for f in tqdm(files):
+    Shared by the batch CLI below and by radiology/lib/preprocess.py (which
+    applies this to a single datastore image on demand from the OHIF panel).
+    """
+    img = resample_to_spacing(img, target_spacing)
+    ct = sitk.GetArrayFromImage(img)
+    cropped, zmin, ymin, xmin = safe_crop(ct)
 
-    in_path = os.path.join(input_dir, f)
-    out_path = os.path.join(output_dir, f)
+    out = sitk.GetImageFromArray(cropped.astype(np.int16))
+    out.SetSpacing(img.GetSpacing())
+    out.SetDirection(img.GetDirection())
 
-    # skip existing (remove this if you want overwrite)
-    if os.path.exists(out_path):
-        continue
+    origin = np.array(img.GetOrigin())
+    spacing = np.array(img.GetSpacing())
+    new_origin = origin + np.array([
+        xmin * spacing[0],
+        ymin * spacing[1],
+        zmin * spacing[2]
+    ])
+    out.SetOrigin(tuple(new_origin))
 
-    try:
-        img = sitk.ReadImage(in_path)
+    return out
 
-        # 1. Resample
-        img = resample_to_spacing(img, (1.0, 1.0, 1.0))
 
-        # 2. To numpy
-        ct = sitk.GetArrayFromImage(img)
+# =========================
+# MAIN LOOP (batch CLI)
+# =========================
+def main():
+    parser = argparse.ArgumentParser(
+        description="Crop CT volumes to the body bounding box and resample to isotropic spacing."
+    )
+    parser.add_argument("--input_dir", required=True, help="Directory containing input *.nii.gz CT volumes")
+    parser.add_argument("--output_dir", required=True, help="Directory to write cropped *.nii.gz CT volumes")
+    args = parser.parse_args()
 
-        # 3. Crop
-        cropped, zmin, ymin, xmin = safe_crop(
-            ct
-        )
+    input_dir = args.input_dir
+    output_dir = args.output_dir
 
-        # 4. Back to SITK
-        out = sitk.GetImageFromArray(cropped.astype(np.int16))
+    os.makedirs(output_dir, exist_ok=True)
 
-        # 5. Metadata
-        out.SetSpacing(img.GetSpacing())
-        out.SetDirection(img.GetDirection())
+    print("🚀 Starting cropping...")
 
-        origin = np.array(img.GetOrigin())
-        spacing = np.array(img.GetSpacing())
+    files = sorted([f for f in os.listdir(input_dir) if f.endswith(".nii.gz")])
 
-        new_origin = origin + np.array([
-            xmin * spacing[0],
-            ymin * spacing[1],
-            zmin * spacing[2]
-        ])
+    for f in tqdm(files):
 
-        out.SetOrigin(tuple(new_origin))
+        in_path = os.path.join(input_dir, f)
+        out_path = os.path.join(output_dir, f)
 
-        sitk.WriteImage(out, out_path)
+        # skip existing (remove this if you want overwrite)
+        if os.path.exists(out_path):
+            continue
 
-    except Exception as e:
-        print(f"❌ Failed {f}: {e}")
+        try:
+            img = sitk.ReadImage(in_path)
+            out = preprocess_ct_image(img)
+            sitk.WriteImage(out, out_path)
+        except Exception as e:
+            print(f"❌ Failed {f}: {e}")
 
-print("✅ Cropping DONE")
+    print("✅ Cropping DONE")
+
+
+if __name__ == "__main__":
+    main()

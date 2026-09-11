@@ -141,6 +141,20 @@ export default class MonaiLabelClient {
     return await MonaiLabelClient.api_get_data(url, 'json');
   }
 
+  // Resamples the image to 1mm isotropic spacing and crops it to the body
+  // bounding box, in place, using the functions in
+  // preprocessing/preprocess_test_ct.py (see radiology/lib/preprocess.py).
+  // Every later infer() / regional_stats() call for this image sees the
+  // preprocessed volume too, since the backend overwrites its own cached
+  // copy rather than storing a separate preprocessed version.
+  async preprocess_image(image) {
+    let url = new URL('datastore/image/preprocess', this.server_url);
+    url.searchParams.append('image', image);
+    url = url.toString();
+
+    return await MonaiLabelClient.api_put(url, {}, null, false, 'json');
+  }
+
   async is_train_running() {
     let url = new URL('train/', this.server_url);
     url.searchParams.append('check_if_running', 'true');
