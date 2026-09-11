@@ -130,14 +130,19 @@ def preprocess_ct_image(img: sitk.Image, target_spacing=(1.0, 1.0, 1.0)) -> sitk
     out.SetSpacing(img.GetSpacing())
     out.SetDirection(img.GetDirection())
 
-    origin = np.array(img.GetOrigin())
-    spacing = np.array(img.GetSpacing())
-    new_origin = origin + np.array([
-        xmin * spacing[0],
-        ymin * spacing[1],
-        zmin * spacing[2]
-    ])
-    out.SetOrigin(tuple(new_origin))
+    # The crop's new (0,0,0) voxel is (xmin, ymin, zmin) in img's own index
+    # space (x,y,z) - TransformIndexToPhysicalPoint correctly folds in
+    # direction as well as spacing/origin to get its true physical
+    # location. A plain `origin + index * spacing` (this file's previous
+    # approach) is only correct when direction is the identity matrix; a
+    # DICOM-derived NIfTI commonly has a non-identity direction (LPS/RAS
+    # sign flips), which silently shifted the cropped volume's origin to
+    # the wrong physical location - harmless for a human eyeballing the
+    # cropped file directly, but it broke resampling a result computed on
+    # this crop back onto the original image (radiology/lib/preprocess.py's
+    # map_result_to_original), which depends on this origin being exactly
+    # right.
+    out.SetOrigin(img.TransformIndexToPhysicalPoint((int(xmin), int(ymin), int(zmin))))
 
     return out
 

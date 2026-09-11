@@ -176,7 +176,6 @@ const AutoSegmentation = forwardRef<any, ActionTabProps>((props, ref) => {
         className="tab-switch"
         defaultValue="segmentation"
         onClick={onSelectActionTab}
-        defaultChecked
       />
       <label htmlFor={tabId} className="tab-label">
         <span className="tabLabelText">
