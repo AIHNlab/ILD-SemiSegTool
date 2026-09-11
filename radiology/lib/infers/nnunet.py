@@ -1,4 +1,4 @@
-import os, glob, shutil, tempfile, torch
+import os, glob, tempfile, torch
 from monailabel.interfaces.tasks.infer_v2 import InferType
 from monailabel.tasks.infer.basic_infer import BasicInferTask
 from lib.infers.prompt_utils import normalize_ct, bbox_mask, polygon_mask, point_outline, exclude_region_mask
@@ -153,6 +153,20 @@ class NNUNet(BasicInferTask):
                 ex_mask = exclude_region_mask(w, h, exclude_shapes)
                 clip = ex_mask if clip is None else (clip & ex_mask)
 
+        # Full-volume runs (no roi/mask_polygon/foreground - the plain
+        # Auto-Segmentation "Run" button) feed nnU-Net the resampled +
+        # body-bbox-cropped volume instead of the raw original: nnunet_lung/
+        # nnunet_ild were trained on data prepared the same way (see
+        # preprocessing/preprocess_test_ct.py's history), so this matches
+        # what the models actually expect. The result is mapped back onto
+        # the original image's exact grid below (map_result_to_original)
+        # before anything downstream - including the OHIF viewport, which
+        # always shows the untouched original DICOM series - ever sees it.
+        # ROI/prompt-driven runs are left exactly as before: the caller's
+        # roi/mask_polygon/foreground coordinates are in the ORIGINAL
+        # image's voxel space, so cropping to the preprocessed grid first
+        # would require re-deriving all of those in that grid too.
+        original_img = None
         bbox = None
         if roi:
             bbox = self._roi_to_bbox(roi, orig_nii.shape, full_depth=full_depth)
@@ -167,7 +181,9 @@ class NNUNet(BasicInferTask):
             crop_nii = nib.Nifti1Image(crop_arr, crop_affine, header=orig_nii.header)
             nib.save(crop_nii, os.path.join(in_dir, "case_0000.nii.gz"))
         else:
-            shutil.copy(image_path, os.path.join(in_dir, "case_0000.nii.gz"))
+            from lib.preprocess import preprocess_for_inference
+            preprocessed_img, original_img = preprocess_for_inference(image_path)
+            sitk.WriteImage(preprocessed_img, os.path.join(in_dir, "case_0000.nii.gz"))
 
         # num_processes_preprocessing/num_processes_segmentation_export default to
         # 8 each (nnunetv2.configuration.default_num_processes), spinning up ~16
@@ -193,8 +209,16 @@ class NNUNet(BasicInferTask):
             arr = np.zeros(orig_nii.shape, dtype=np.uint8)
             arr[xmin:xmax, ymin:ymax, zmin:zmax] = pred_arr
         else:
-            nii   = nib.load(result)
-            arr   = np.asanyarray(nii.dataobj).astype(np.uint8)
+            # Full-volume run: pred_img is on preprocessed_img's grid: map it
+            # back onto the original image's grid before anything else sees
+            # it (see the preprocess_for_inference call above).
+            from lib.preprocess import map_result_to_original
+
+            pred_img = sitk.ReadImage(result)
+            pred_img_original = map_result_to_original(pred_img, original_img)
+            # sitk gives (z,y,x); flip to nibabel's (x,y,z) so the shared tail
+            # below (clip/transpose/CopyInformation) is identical either way
+            arr = sitk.GetArrayFromImage(pred_img_original).astype(np.uint8).transpose(2, 1, 0)
 
         if clip is not None:
             # clip is (h, w) = (y, x); arr is (x, y, z) - transpose to (x, y)

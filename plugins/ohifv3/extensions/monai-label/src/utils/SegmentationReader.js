@@ -23,7 +23,16 @@ export default class SegmentationReader {
       const buffer = pako.inflate(nrrdfile.buffer).buffer;
 
       nrrdfile.encoding = 'raw';
-      nrrdfile.data = new Uint16Array(buffer);
+      // uint8, not uint16: every writer in this app (see lib/infers/nnunet.py's
+      // comment) emits uint8 label data, and `.data` here is discarded right
+      // below anyway (`image` comes from `.buffer`, and `.data` is deleted) -
+      // but Uint16Array still runs its "byteLength must be even" check just to
+      // construct a value nothing uses, which throws for any odd total voxel
+      // count. Preprocessed (cropped) volumes can have odd width/height where
+      // the original DICOM series (always 512x512xN) never did, so this only
+      // started firing once cropping existed. Uint8Array has no such
+      // alignment requirement and matches the actual data width.
+      nrrdfile.data = new Uint8Array(buffer);
       nrrdfile.buffer = buffer;
     }
 

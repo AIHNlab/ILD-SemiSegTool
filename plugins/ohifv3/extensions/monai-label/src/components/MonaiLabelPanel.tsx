@@ -361,6 +361,7 @@ export default class MonaiLabelPanel extends Component<any, any> {
       xyBounds,
       mode,
     });
+
     const ret = SegmentationReader.parseNrrdData(response.data);
     if (!ret) {
       throw new Error('Failed to parse NRRD data');
@@ -891,9 +892,19 @@ export default class MonaiLabelPanel extends Component<any, any> {
               onOptionsConfig={this.onOptionsConfig}
               getActiveViewportInfo={this.getActiveViewportInfo}
             />
+            <Preprocessing
+              ref={this.actions['preprocessing']}
+              tabIndex={2}
+              info={this.state.info}
+              client={this.client}
+              setBusy={(busy: boolean) => this.setBusy('preprocessing', busy)}
+              isBusy={!!this.state.busyActions['preprocessing']}
+              onSelectActionTab={this.onSelectActionTab}
+              getActiveViewportInfo={this.getActiveViewportInfo}
+            />
             <AutoSegmentation
               ref={this.actions['segmentation']}
-              tabIndex={2}
+              tabIndex={3}
               info={this.state.info}
               client={this.client}
               updateView={this.updateView}
@@ -906,7 +917,7 @@ export default class MonaiLabelPanel extends Component<any, any> {
             />
             <SemiSegmentation
               ref={this.actions['semisegmentation']}
-              tabIndex={3}
+              tabIndex={4}
               info={this.state.info}
               client={this.client}
               updateView={this.updateView}
@@ -922,7 +933,7 @@ export default class MonaiLabelPanel extends Component<any, any> {
             />
             <ClassPrompts
               ref={this.actions['classprompts']}
-              tabIndex={4}
+              tabIndex={5}
               info={this.state.info}
               client={this.client}
               updateView={this.updateView}
@@ -937,7 +948,7 @@ export default class MonaiLabelPanel extends Component<any, any> {
             />
             <RegionalStats
               ref={this.actions['regionalstats']}
-              tabIndex={5}
+              tabIndex={6}
               info={this.state.info}
               client={this.client}
               setBusy={(busy: boolean) => this.setBusy('regionalstats', busy)}
@@ -945,16 +956,6 @@ export default class MonaiLabelPanel extends Component<any, any> {
               onSelectActionTab={this.onSelectActionTab}
               getActiveViewportInfo={this.getActiveViewportInfo}
               servicesManager={this.props.servicesManager}
-            />
-            <Preprocessing
-              ref={this.actions['preprocessing']}
-              tabIndex={6}
-              info={this.state.info}
-              client={this.client}
-              setBusy={(busy: boolean) => this.setBusy('preprocessing', busy)}
-              isBusy={!!this.state.busyActions['preprocessing']}
-              onSelectActionTab={this.onSelectActionTab}
-              getActiveViewportInfo={this.getActiveViewportInfo}
             />
           </div>
         )}
