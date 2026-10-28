@@ -957,6 +957,16 @@ export default class MonaiLabelPanel extends Component<any, any> {
               getActiveViewportInfo={this.getActiveViewportInfo}
               servicesManager={this.props.servicesManager}
             />
+            <Preprocessing
+              ref={this.actions['preprocessing']}
+              tabIndex={6}
+              info={this.state.info}
+              client={this.client}
+              setBusy={(busy: boolean) => this.setBusy('preprocessing', busy)}
+              isBusy={!!this.state.busyActions['preprocessing']}
+              onSelectActionTab={this.onSelectActionTab}
+              getActiveViewportInfo={this.getActiveViewportInfo}
+            />
           </div>
         )}
       </div>
