@@ -1,34 +1,24 @@
 #!/bin/bash
-# Stops the ILD-OHIF-Tool app processes (OHIF viewer + MONAI Label server).
-# Orthanc and Colima are left running by default since they're lightweight
-# when idle and Orthanc holds your uploaded studies. Pass --all to stop those too.
-set -e
+# Stops the OHIF dev viewer and MONAI Label server. Orthanc (and Colima on macOS)
+# keep running since they hold your uploaded studies; pass --all to stop them too.
+set -uo pipefail
 
-echo "==> Stopping OHIF v3 viewer dev server (port 3002)"
-PID=$(lsof -tiTCP:3002 -sTCP:LISTEN 2>/dev/null || true)
-if [ -n "$PID" ]; then
-  kill "$PID"
-  echo "    stopped (PID $PID)"
+stop_port() {
+  local pids
+  pids=$(lsof -tiTCP:"$2" -sTCP:LISTEN 2>/dev/null)
+  if [ -n "$pids" ]; then
+    kill $pids && echo "==> $1 (port $2): stopped"
+  else
+    echo "==> $1 (port $2): not running"
+  fi
+}
+
+stop_port "OHIF v3 dev viewer" 3002
+stop_port "MONAI Label server" 8000
+
+if [ "${1:-}" = "--all" ]; then
+  docker stop orthanc >/dev/null 2>&1 && echo "==> Orthanc: stopped" || echo "==> Orthanc: not running"
+  if [ "$(uname)" = "Darwin" ]; then colima stop; fi
 else
-  echo "    not running"
-fi
-
-echo "==> Stopping MONAI Label server (port 8000)"
-PID=$(lsof -tiTCP:8000 -sTCP:LISTEN 2>/dev/null || true)
-if [ -n "$PID" ]; then
-  kill "$PID"
-  echo "    stopped (PID $PID)"
-else
-  echo "    not running"
-fi
-
-if [ "$1" = "--all" ]; then
-  echo "==> Stopping Orthanc"
-  docker stop orthanc >/dev/null 2>&1 && echo "    stopped" || echo "    not running"
-
-  echo "==> Stopping Colima"
-  colima stop
-else
-  echo ""
-  echo "Orthanc + Colima left running (lightweight when idle). Pass --all to stop those too."
+  echo "Orthanc left running. Pass --all to stop it too."
 fi

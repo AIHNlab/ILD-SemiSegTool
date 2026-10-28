@@ -5,12 +5,9 @@
 # stack (unlike the MONAI Label backend — see setup_linux.sh for that).
 #
 # Usage: ./build_ohif_docker.sh
-# Then deploy dist/ into your MONAI Label install — see start_linux.txt
-# step 6, or just re-run setup_linux.sh's deploy snippet:
-#   conda activate ild-ohif
-#   MONAILABEL_SITE_PACKAGES="$(python -c 'import monailabel, os; print(os.path.dirname(os.path.dirname(monailabel.__file__)))')"
-#   rm -rf "$MONAILABEL_SITE_PACKAGES/monailabel/endpoints/static/ohif"
-#   cp -r plugins/ohifv3/Viewers/platform/app/dist "$MONAILABEL_SITE_PACKAGES/monailabel/endpoints/static/ohif"
+# Then deploy dist/ into your MONAI Label install (see start_linux.txt step 6):
+#   STATIC="$(~/miniconda3/envs/ild-ohif/bin/python -c 'import monailabel, os; print(os.path.dirname(monailabel.__file__))')/endpoints/static"
+#   rm -rf "$STATIC/ohif" && cp -r plugins/ohifv3/Viewers/platform/app/dist "$STATIC/ohif"
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
