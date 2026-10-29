@@ -67,7 +67,7 @@ const Preprocessing = forwardRef<any, ActionTabProps>((props, ref) => {
 
     const nid = notification.show({
       title: 'MONAI Label',
-      message: 'Preprocessing slices (resample + body-bbox crop)...',
+      message: 'Computing preprocessing preview...',
       type: 'info',
       autoClose: false,
     });
@@ -80,7 +80,7 @@ const Preprocessing = forwardRef<any, ActionTabProps>((props, ref) => {
       if (!response || response.status !== 200) {
         notification.show({
           title: 'MONAI Label',
-          message: `Failed to preprocess slices: ${describeError(response)}`,
+          message: `Failed to compute preprocessing preview: ${describeError(response)}`,
           type: 'error',
           duration: 8000,
         });
@@ -88,17 +88,11 @@ const Preprocessing = forwardRef<any, ActionTabProps>((props, ref) => {
       }
 
       setResult(response.data);
-      notification.show({
-        title: 'MONAI Label',
-        message: 'Preprocessing - Successful',
-        type: 'success',
-        duration: 4000,
-      });
     } catch (e) {
       hideNotification(nid, notification);
       notification.show({
         title: 'MONAI Label',
-        message: `Failed to preprocess slices: ${describeError(e)}`,
+        message: `Failed to compute preprocessing preview: ${describeError(e)}`,
         type: 'error',
         duration: 8000,
       });
@@ -116,6 +110,7 @@ const Preprocessing = forwardRef<any, ActionTabProps>((props, ref) => {
         className="tab-switch"
         defaultValue="preprocessing"
         onClick={onSelectActionTab}
+        defaultChecked
       />
       <label htmlFor={tabId} className="tab-label">
         <span className="tabLabelText">
@@ -125,8 +120,9 @@ const Preprocessing = forwardRef<any, ActionTabProps>((props, ref) => {
       </label>
       <div className="tab-content">
         <p style={{ fontSize: 'smaller' }}>
-          Resamples to 1mm isotropic spacing and crops to the body bounding box. Later
-          Run/Compute actions use the preprocessed slices.
+          Preview only - Auto-Segmentation already resamples to 1mm isotropic spacing and
+          crops to the body bounding box internally before every run, then maps the result
+          back onto this image automatically. Nothing here needs to be run first.
         </p>
         <button
           className="actionButton preprocessButton"
@@ -134,7 +130,7 @@ const Preprocessing = forwardRef<any, ActionTabProps>((props, ref) => {
           disabled={isBusy}
         >
           <LayersIcon />
-          <span>{isBusy ? 'Preprocessing…' : 'Preprocess Slices'}</span>
+          <span>{isBusy ? 'Computing…' : 'Preview Preprocessing'}</span>
         </button>
         {result && (
           <div className="preprocessStats">
