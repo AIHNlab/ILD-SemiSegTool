@@ -81,7 +81,12 @@ export default class SegmentationReader {
   // keeps DICOM's native LPS convention (it doesn't flip to RAS), so
   // `space: left-posterior-superior` is set explicitly rather than left
   // for MONAI to assume.
-  static writeNrrdData(data, { sizes, direction, spacing, origin }) {
+  //
+  // keyValues: optional NRRD `key:=value` metadata (values must be single-
+  // line strings) - parseNrrdData returns them as header.keys. gzip: deflate
+  // the voxel data, which shrinks a mostly-empty labelmap ~100x; files for
+  // the backend stay raw so nothing server-side has to handle gzip.
+  static writeNrrdData(data, { sizes, direction, spacing, origin }, { keyValues = {}, gzip = false } = {}) {
     const spaceDirections = [0, 1, 2]
       .map((axis) => {
         const v = [0, 1, 2].map(
@@ -100,13 +105,17 @@ export default class SegmentationReader {
       `sizes: ${sizes.join(' ')}\n` +
       `space directions: ${spaceDirections}\n` +
       `space origin: ${spaceOrigin}\n` +
-      'encoding: raw\n' +
+      `encoding: ${gzip ? 'gzip' : 'raw'}\n` +
+      Object.entries(keyValues)
+        .map(([key, value]) => `${key}:=${String(value).replace(/\n/g, ' ')}\n`)
+        .join('') +
       '\n';
     const headerBytes = new TextEncoder().encode(header);
-    const buffer = new ArrayBuffer(headerBytes.length + data.byteLength);
+    const body = gzip ? pako.gzip(data) : data;
+    const buffer = new ArrayBuffer(headerBytes.length + body.byteLength);
     const bytes = new Uint8Array(buffer);
     bytes.set(headerBytes, 0);
-    bytes.set(data, headerBytes.length);
+    bytes.set(body, headerBytes.length);
     return buffer;
   }
 }

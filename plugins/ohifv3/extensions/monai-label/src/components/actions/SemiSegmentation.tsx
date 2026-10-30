@@ -346,6 +346,34 @@ const SemiSegmentation = forwardRef<any, ActionTabProps>((props, ref) => {
     });
   };
 
+  // Undoes activateBrushSegment's locks - they only make sense while the
+  // brush is the active tool, and left in place they'd silently block every
+  // other class from being painted/erased by any later brush stroke.
+  const unlockAllSegments = () => {
+    Object.values(segmentInfo()).forEach(({ segmentIndex }: any) => {
+      try {
+        cornerstoneTools.segmentation.segmentLocking.setSegmentIndexLocked('1', segmentIndex, false);
+      } catch (e) {
+        // Not registered in cornerstone3D's segmentation state yet - nothing to unlock.
+      }
+    });
+  };
+
+  // Points the brush at the given class: keeps the pending baseline if it
+  // already belongs to that class (so a not-yet-sent edit isn't discarded),
+  // otherwise arms a fresh one. Must run whenever the brush becomes active or
+  // the class changes - a baseline left over from an earlier brush session
+  // keeps that OLD class active and every other class (including the one
+  // now ticked) locked, so painting/erasing the ticked class does nothing.
+  const armBrush = (label: string | null) => {
+    const segIndex = label && segmentInfo()[label]?.segmentIndex;
+    if (brushSnapshot && segIndex != null && brushSnapshot.segIndex === segIndex) {
+      activateBrushSegment(segIndex);
+      return;
+    }
+    snapshotBrush(label);
+  };
+
   // Arms a fresh brush baseline: the current state of the given class
   // across the whole volume. Also points CircularBrush/CircularEraser at
   // that class's segment index, so painting actually edits it rather than
@@ -582,19 +610,9 @@ const SemiSegmentation = forwardRef<any, ActionTabProps>((props, ref) => {
 
   const onSelectLabel = (label: string) => {
     setCurrentLabel(label);
-    if (currentShape !== 'brush') {
-      return;
+    if (currentShape === 'brush') {
+      armBrush(label);
     }
-    const segIndex = segmentInfo()[label]?.segmentIndex;
-    if (brushSnapshot && segIndex != null && brushSnapshot.segIndex === segIndex) {
-      // Re-confirming the same class this session's pending edit already
-      // belongs to (e.g. re-picking it after currentLabel got cleared by a
-      // model switch) - keep the existing baseline so that edit isn't
-      // discarded, just make sure the brush is still targeting/locked to it.
-      activateBrushSegment(segIndex);
-      return;
-    }
-    snapshotBrush(label);
   };
 
   const onSelectShape = (shape: string) => {
@@ -607,14 +625,14 @@ const SemiSegmentation = forwardRef<any, ActionTabProps>((props, ref) => {
     switchTool(toolNameFor(currentShape, excludeMode), toolNameFor(shape, excludeMode));
     setCurrentShape(shape);
     if (shape !== 'brush') {
+      if (currentShape === 'brush') {
+        unlockAllSegments();
+      }
       return;
     }
-    // Only arm a fresh baseline if there isn't one already pending -
-    // switching to brush, away, and back (e.g. to draw a point in between)
-    // shouldn't discard an edit still waiting to be Run.
-    if (!brushSnapshot) {
-      snapshotBrush(currentLabel);
-    }
+    // Re-targets the ticked class (it may have changed while another tool
+    // was active) - a pending edit for that same class is kept, see armBrush.
+    armBrush(currentLabel);
     // The tool group may not have existed yet at mount (e.g. panel opened
     // before the viewport finished initializing) - re-apply here too so the
     // slider's value is never stale once brush is actually selectable.
@@ -628,14 +646,23 @@ const SemiSegmentation = forwardRef<any, ActionTabProps>((props, ref) => {
     const nextExcludeMode = !excludeMode;
     switchTool(toolNameFor(currentShape, excludeMode), toolNameFor(currentShape, nextExcludeMode));
     setExcludeMode(nextExcludeMode);
+    if (currentShape === 'brush') {
+      armBrush(currentLabel);
+    }
   };
 
   const onEnterActionTab = () => {
     commandsManager.runCommand('setToolActive', { toolName: toolNameFor(currentShape, excludeMode) });
+    if (currentShape === 'brush') {
+      armBrush(currentLabel);
+    }
   };
 
   const onLeaveActionTab = () => {
     commandsManager.runCommand('setToolDisable', { toolName: toolNameFor(currentShape, excludeMode) });
+    if (currentShape === 'brush') {
+      unlockAllSegments();
+    }
   };
 
   // MonaiLabelPanel calls these two unconditionally on every action tab's

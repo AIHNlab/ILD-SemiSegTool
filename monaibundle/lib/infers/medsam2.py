@@ -22,6 +22,10 @@ HU_MAX = 400
 SAM2_SIZE = 512
 # Inference config — same one used by infer_ild_npz.py / infer_lung_npz.py
 SAM2_CFG = "configs/sam2.1_hiera_t512.yaml"
+# MedSAM2 is trained and run on ImageNet-normalized frames; the predictor
+# doesn't apply this itself.
+IMG_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)[:, None, None]
+IMG_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)[:, None, None]
 
 
 def _normalize_ct(volume: np.ndarray) -> np.ndarray:
@@ -31,13 +35,13 @@ def _normalize_ct(volume: np.ndarray) -> np.ndarray:
 
 
 def _resize_to_rgb(imgs: np.ndarray, size: int = SAM2_SIZE) -> np.ndarray:
-    """(D, H, W) uint8 → (D, 3, size, size) float32 in [0, 1]."""
+    """(D, H, W) uint8 → (D, 3, size, size) float32, ImageNet-normalized."""
     D = imgs.shape[0]
     out = np.zeros((D, 3, size, size), dtype=np.float32)
     for z in range(D):
         img = PILImage.fromarray(imgs[z]).resize((size, size), PILImage.BILINEAR)
         arr = np.array(img, dtype=np.float32) / 255.0
-        out[z] = np.stack([arr, arr, arr], axis=0)
+        out[z] = (np.stack([arr, arr, arr], axis=0) - IMG_MEAN) / IMG_STD
     return out
 
 

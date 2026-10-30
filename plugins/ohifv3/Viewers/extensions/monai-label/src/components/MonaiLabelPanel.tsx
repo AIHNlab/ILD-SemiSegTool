@@ -32,7 +32,6 @@ import SettingsTable from './SettingsTable';
 import * as cornerstoneTools from '@cornerstonejs/tools';
 import optionsInputDialog from './OptionsInputDialog';
 import saveSegmentationDialog from './SaveSegmentationDialog';
-import loadSegmentationDialog from './LoadSegmentationDialog';
 
 const SaveIcon = () => (
   <svg
@@ -45,9 +44,9 @@ const SaveIcon = () => (
     strokeLinecap="round"
     strokeLinejoin="round"
   >
-    <path d="M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z" />
-    <path d="M17 21v-7a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v7" />
-    <path d="M7 3v4a1 1 0 0 0 1 1h7a1 1 0 0 0 1-1V3.4" />
+    <path d="M12 3v12" />
+    <path d="m7 10 5 5 5-5" />
+    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
   </svg>
 );
 
@@ -67,6 +66,10 @@ const LoadIcon = () => (
     <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
   </svg>
 );
+
+// Marks a .nrrd as saved by this tool (see exportSegmentationFile), and
+// versions the metadata keys below it.
+const EXPORT_FORMAT = 'ild-semiseg-1';
 
 export default class MonaiLabelPanel extends Component<any, any> {
   static propTypes = {
@@ -598,68 +601,27 @@ export default class MonaiLabelPanel extends Component<any, any> {
     return this.state.options;
   };
 
-  // Saving is manual-only now (see onClickSaveSegmentation) - each save
-  // gets its own 'save-<timestamp>' tag (rather than always overwriting a
-  // single 'final' label), carrying model/classes/timestamp metadata so
-  // the Load Segmentation picker can show the user what they're choosing
-  // between.
-  onSaveSegmentation = async (classes) => {
-    try {
-      const { segmentationService } = this.props.servicesManager.services;
-      const volumeLoadObject = segmentationService.getLabelmapVolume('1');
-      const scalarData = volumeLoadObject?.voxelManager?.getCompleteScalarDataArray();
-      if (!scalarData) {
-        return false;
-      }
-
-      const { displaySet } = this.getActiveViewportInfo();
-      if (!displaySet) {
-        return false;
-      }
-
-      const nrrdBuffer = SegmentationReader.writeNrrdData(new Uint8Array(scalarData), {
-        sizes: volumeLoadObject.dimensions,
-        direction: volumeLoadObject.direction,
-        spacing: volumeLoadObject.spacing,
-        origin: volumeLoadObject.origin,
-      });
-
-      const tag = `save-${Date.now()}`;
-      const response = await this.client().save_label(
-        displaySet.SeriesInstanceUID,
-        new Blob([nrrdBuffer]),
-        { model: this.lastUsedModel, classes },
-        tag
-      );
-
-      if (response.status !== 200) {
-        console.error('Failed to save segmentation', response);
-        this.notification.show({
-          title: 'MONAI Label',
-          message: `Failed to save segmentation: ${describeError(response)}`,
-          type: 'error',
-          duration: 8000,
-        });
-        return false;
-      }
-
-      this.notification.show({
-        title: 'MONAI Label',
-        message: 'Segmentation saved',
-        type: 'success',
-        duration: 3000,
-      });
-      return true;
-    } catch (e) {
-      console.error('Failed to save segmentation', e);
-      this.notification.show({
-        title: 'MONAI Label',
-        message: `Failed to save segmentation: ${describeError(e)}`,
-        type: 'error',
-        duration: 8000,
-      });
-      return false;
+  // Saving writes a .nrrd file to the user's computer (exportSegmentationFile)
+  // - that file is the durable copy: it survives the MONAI Label cache being
+  // cleared and can be shared with another device (see onImportSegmentationFile).
+  // A copy is also stored on the server (saveToServer), because Regional
+  // Stats reads the latest saved lung/ILD segmentations from the server's
+  // datastore (radiology/lib/regional_stats.py), not from the viewer.
+  onSaveSegmentation = async () => {
+    const fileName = this.exportSegmentationFile();
+    if (!fileName) {
+      return;
     }
+
+    const synced = await this.saveToServer();
+    this.notification.show({
+      title: 'MONAI Label',
+      message: synced
+        ? `Saved ${fileName}`
+        : `Saved ${fileName}, but the server copy failed - Regional Stats won't see this save until it's loaded again`,
+      type: synced ? 'success' : 'warning',
+      duration: synced ? 4000 : 10000,
+    });
   };
 
   // Auto-fills the confirm dialog from the current segmentation state:
@@ -682,6 +644,16 @@ export default class MonaiLabelPanel extends Component<any, any> {
       return;
     }
 
+    const classes = this.presentClasses(scalarData).map((c) => c.name);
+    saveSegmentationDialog(uiDialogService, { model: this.lastUsedModel, classes }, () => {
+      this.onSaveSegmentation();
+    });
+  };
+
+  // Classes that actually have voxels in scalarData (not just every label in
+  // the session's list, most of which are usually unpainted), ascending by
+  // their voxel index in this session.
+  presentClasses = (scalarData) => {
     const presentIndices = new Set();
     for (let i = 0; i < scalarData.length; i++) {
       if (scalarData[i]) {
@@ -689,121 +661,204 @@ export default class MonaiLabelPanel extends Component<any, any> {
       }
     }
 
+    const { segmentationService } = this.props.servicesManager.services;
     const { info } = currentSegmentsInfo(segmentationService);
-    const classes = Object.keys(info)
+    return Object.keys(info)
       .filter((name) => presentIndices.has(info[name].segmentIndex))
-      .sort((a, b) => info[a].segmentIndex - info[b].segmentIndex);
-
-    saveSegmentationDialog(uiDialogService, { model: this.lastUsedModel, classes }, () => {
-      this.onSaveSegmentation(classes);
-    });
+      .map((name) => ({ name, index: info[name].segmentIndex, color: info[name].color }))
+      .sort((a, b) => a.index - b.index);
   };
 
-  // Lists this image's saves and opens the picker (see LoadSegmentationDialog);
-  // the actual voxel install only happens once the user picks a save AND
-  // confirms it in the details modal (onLoadSegmentation).
-  onClickLoadSegmentation = async (e) => {
-    e.preventDefault();
+  // Stores the current segmentation in the server's datastore under its own
+  // 'save-<timestamp>' tag, with the model/classes metadata Regional Stats
+  // needs (classes sorted by live voxel index - see presentClasses).
+  // Returns whether it succeeded; callers own the user-facing notification.
+  saveToServer = async () => {
+    try {
+      const { segmentationService } = this.props.servicesManager.services;
+      const volumeLoadObject = segmentationService.getLabelmapVolume('1');
+      const scalarData = volumeLoadObject?.voxelManager?.getCompleteScalarDataArray();
+      const { displaySet } = this.getActiveViewportInfo();
+      if (!scalarData || !displaySet) {
+        return false;
+      }
 
-    const { displaySet } = this.getActiveViewportInfo();
-    if (!displaySet) {
-      return;
-    }
-
-    const response = await this.client().list_labels(displaySet.SeriesInstanceUID);
-    if (!response || response.status !== 200) {
-      this.notification.show({
-        title: 'MONAI Label',
-        message: `Failed to list saved segmentations: ${describeError(response)}`,
-        type: 'error',
-        duration: 8000,
+      const nrrdBuffer = SegmentationReader.writeNrrdData(new Uint8Array(scalarData), {
+        sizes: volumeLoadObject.dimensions,
+        direction: volumeLoadObject.direction,
+        spacing: volumeLoadObject.spacing,
+        origin: volumeLoadObject.origin,
       });
-      return;
-    }
-
-    const saves = (response.data || [])
-      .filter((save) => save.tag && save.tag.startsWith('save-'))
-      .sort((a, b) => (b.info?.ts || 0) - (a.info?.ts || 0));
-
-    const { uiDialogService } = this.props.servicesManager.services;
-    loadSegmentationDialog(
-      uiDialogService,
-      saves,
-      (tag) => {
-        this.onLoadSegmentation(displaySet.SeriesInstanceUID, tag);
-      },
-      (save) => this.onDeleteSavedSegmentation(displaySet.SeriesInstanceUID, save)
-    );
-  };
-
-  // Backing action for the trash icon in the Load Segmentation list -
-  // returns whether the delete actually succeeded so the dialog only drops
-  // the row from its list once the backend confirms it's gone.
-  onDeleteSavedSegmentation = async (image, save) => {
-    const response = await this.client().remove_label(image, save.tag);
-    if (!response || response.status !== 200) {
-      this.notification.show({
-        title: 'MONAI Label',
-        message: `Failed to delete saved segmentation: ${describeError(response)}`,
-        type: 'error',
-        duration: 8000,
-      });
+      const classes = this.presentClasses(scalarData).map((c) => c.name);
+      const response = await this.client().save_label(
+        displaySet.SeriesInstanceUID,
+        new Blob([nrrdBuffer]),
+        { model: this.lastUsedModel, classes },
+        `save-${Date.now()}`
+      );
+      if (response.status !== 200) {
+        console.error('Failed to save segmentation to the server', response);
+        return false;
+      }
+      return true;
+    } catch (e) {
+      console.error('Failed to save segmentation to the server', e);
       return false;
     }
-    this.notification.show({
-      title: 'MONAI Label',
-      message: 'Saved segmentation deleted',
-      type: 'success',
-      duration: 3000,
-    });
-    return true;
   };
 
-  onLoadSegmentation = async (image, tag) => {
-    const response = await this.client().get_label(image, tag);
-    if (!response || response.status !== 200) {
+  // Downloads the current segmentation as one self-contained .nrrd file and
+  // returns its file name (null if there was nothing to save). Voxel indices
+  // are only meaningful within one session (they come from the alphabetical
+  // union of whatever models the server has loaded - see onInfo), so the
+  // file records each class's NAME next to its index;
+  // onImportSegmentationFile remaps by name.
+  exportSegmentationFile = () => {
+    const { segmentationService } = this.props.servicesManager.services;
+    const volumeLoadObject = segmentationService.getLabelmapVolume('1');
+    const scalarData = volumeLoadObject?.voxelManager?.getCompleteScalarDataArray();
+    const { displaySet } = this.getActiveViewportInfo();
+    const classes = scalarData ? this.presentClasses(scalarData) : [];
+    if (!classes.length || !displaySet) {
       this.notification.show({
         title: 'MONAI Label',
-        message: `Failed to load segmentation: ${describeError(response)}`,
-        type: 'error',
-        duration: 8000,
+        message: 'Nothing to save yet',
+        type: 'warning',
+        duration: 4000,
       });
-      return;
+      return null;
     }
 
-    const ret = SegmentationReader.parseNrrdData(response.data);
-    if (!ret) {
-      this.notification.show({
-        title: 'MONAI Label',
-        message: 'Saved segmentation could not be parsed',
-        type: 'error',
-        duration: 8000,
-      });
+    const savedAt = new Date();
+    const buffer = SegmentationReader.writeNrrdData(
+      new Uint8Array(scalarData),
+      {
+        sizes: volumeLoadObject.dimensions,
+        direction: volumeLoadObject.direction,
+        spacing: volumeLoadObject.spacing,
+        origin: volumeLoadObject.origin,
+      },
+      {
+        gzip: true,
+        keyValues: {
+          format: EXPORT_FORMAT,
+          model: this.lastUsedModel || '',
+          classes: JSON.stringify(classes),
+          study_instance_uid: displaySet.StudyInstanceUID,
+          series_instance_uid: displaySet.SeriesInstanceUID,
+          saved_at: savedAt.toISOString(),
+        },
+      }
+    );
+
+    const pad = (n) => String(n).padStart(2, '0');
+    const stamp =
+      `${savedAt.getFullYear()}${pad(savedAt.getMonth() + 1)}${pad(savedAt.getDate())}` +
+      `-${pad(savedAt.getHours())}${pad(savedAt.getMinutes())}`;
+    const fileName = `segmentation_${this.lastUsedModel || 'manual'}_${stamp}.nrrd`;
+    const url = URL.createObjectURL(new Blob([buffer], { type: 'application/octet-stream' }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = fileName;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+    return fileName;
+  };
+
+  onClickLoadSegmentation = (e) => {
+    e.preventDefault();
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.nrrd';
+    input.onchange = () => {
+      const file = input.files?.[0];
+      if (file) {
+        this.onImportSegmentationFile(file);
+      }
+    };
+    input.click();
+  };
+
+  // Loads a file written by exportSegmentationFile - on this or any other
+  // device. Also accepts a plain uint8 label NRRD without this tool's
+  // metadata (e.g. one written by another tool), in which case voxel values
+  // are taken as this session's segment indices.
+  onImportSegmentationFile = async (file) => {
+    const fail = (message) =>
+      this.notification.show({ title: 'MONAI Label', message, type: 'error', duration: 8000 });
+
+    let ret;
+    try {
+      ret = SegmentationReader.parseNrrdData(await file.arrayBuffer());
+    } catch (err) {
+      console.error('Failed to parse loaded segmentation', err);
+      fail(`${file.name} is not a readable NRRD segmentation file`);
       return;
     }
 
     const { segmentationService } = this.props.servicesManager.services;
     const volumeLoadObject = segmentationService.getLabelmapVolume('1');
     const scalarData = volumeLoadObject?.voxelManager?.getCompleteScalarDataArray();
+    const { displaySet } = this.getActiveViewportInfo();
     const data = new Uint8Array(ret.image);
-    if (!scalarData || data.length !== scalarData.length) {
-      // Most likely the saved file is from a differently-sized image (or a
-      // stale/incompatible save) - installing it anyway would silently
-      // corrupt the current volume.
-      console.warn('Saved segmentation size mismatch - skipping load', {
-        savedLength: data.length,
-        expectedLength: scalarData?.length,
-      });
-      this.notification.show({
-        title: 'MONAI Label',
-        message: 'Saved segmentation does not match the current image - skipped',
-        type: 'error',
-        duration: 8000,
-      });
+    const sizes = ret.header.sizes || [];
+    const dims = volumeLoadObject?.dimensions || [];
+    if (
+      !scalarData ||
+      data.length !== scalarData.length ||
+      sizes.length !== dims.length ||
+      sizes.some((s, i) => s !== dims[i])
+    ) {
+      fail(
+        `${file.name} does not match the open image (file ${sizes.join('x') || '?'}, ` +
+          `image ${dims.join('x') || '?'}) - open the series it was saved from`
+      );
       return;
     }
 
-    volumeLoadObject.voxelManager.setCompleteScalarDataArray(data);
+    const keys = ret.header.keys || {};
+    if (
+      keys.series_instance_uid &&
+      displaySet &&
+      keys.series_instance_uid !== displaySet.SeriesInstanceUID &&
+      !window.confirm(
+        `${file.name} was saved from a different series than the one open now. ` +
+          'Its size matches, but the anatomy may not. Load it anyway?'
+      )
+    ) {
+      return;
+    }
+
+    const { info } = currentSegmentsInfo(segmentationService);
+    const lookup = new Uint8Array(256);
+    const missing = [];
+    let fileClasses = null;
+    try {
+      fileClasses = keys.classes ? JSON.parse(keys.classes) : null;
+    } catch (err) {
+      console.warn('Ignoring unreadable class list in loaded segmentation', err);
+    }
+    if (Array.isArray(fileClasses)) {
+      for (const { name, index } of fileClasses) {
+        const target = info[name]?.segmentIndex;
+        if (target) {
+          lookup[index] = target;
+        } else {
+          missing.push(name);
+        }
+      }
+    } else {
+      Object.values(info).forEach(({ segmentIndex }: any) => {
+        lookup[segmentIndex] = segmentIndex;
+      });
+    }
+
+    const remapped = new Uint8Array(data.length);
+    for (let i = 0; i < data.length; i++) {
+      remapped[i] = lookup[data[i]];
+    }
+
+    volumeLoadObject.voxelManager.setCompleteScalarDataArray(remapped);
     triggerEvent(eventTarget, Enums.Events.SEGMENTATION_DATA_MODIFIED, {
       segmentationId: '1',
     });
@@ -811,11 +866,28 @@ export default class MonaiLabelPanel extends Component<any, any> {
     // resetBaseline's own comment for why undo shouldn't be able to step
     // back past it to whatever segmentation existed before.
     annotationHistory.resetBaseline();
+    if (keys.model) {
+      // Later saves and Regional Stats then attribute this segmentation to
+      // the model that originally produced it.
+      this.lastUsedModel = keys.model;
+    }
+
+    // Re-registers it on the server so Regional Stats works again even if
+    // the server's cache (where its saves live) was cleared since saving.
+    const synced = await this.saveToServer();
+
+    const source = keys.model ? ` (model: ${keys.model})` : '';
+    const problems = [
+      missing.length ? `skipped classes this server has no model for: ${missing.join(', ')}` : '',
+      synced ? '' : "the server copy failed, so Regional Stats won't see it",
+    ].filter(Boolean);
     this.notification.show({
       title: 'MONAI Label',
-      message: 'Loaded saved segmentation',
-      type: 'success',
-      duration: 4000,
+      message: problems.length
+        ? `Loaded ${file.name}${source}, but ${problems.join('; ')}`
+        : `Loaded ${file.name}${source}`,
+      type: problems.length ? 'warning' : 'success',
+      duration: problems.length ? 10000 : 4000,
     });
   };
 
@@ -860,7 +932,7 @@ export default class MonaiLabelPanel extends Component<any, any> {
             <a
               href="#"
               onClick={this.onClickSaveSegmentation}
-              title="Save Segmentation"
+              title="Save Segmentation (downloads a .nrrd file)"
               aria-label="Save Segmentation"
               className="headerIconLink"
             >
@@ -869,7 +941,7 @@ export default class MonaiLabelPanel extends Component<any, any> {
             <a
               href="#"
               onClick={this.onClickLoadSegmentation}
-              title="Load Segmentation"
+              title="Load Segmentation (from a saved .nrrd file)"
               aria-label="Load Segmentation"
               className="headerIconLink"
             >

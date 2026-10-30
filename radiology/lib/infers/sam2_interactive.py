@@ -14,6 +14,12 @@ logger = logging.getLogger(__name__)
 SAM2_SIZE = 512
 SAM2_CFG = "configs/sam2.1_hiera_t512.yaml"
 
+# MedSAM2 is trained (NormalizeAPI in its training configs) and run
+# (medsam2_infer_3D_CT.py) on ImageNet-normalized frames - the predictor
+# doesn't apply this itself, so feeding raw [0, 1] frames is off-distribution.
+IMG_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)[:, None, None]
+IMG_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)[:, None, None]
+
 # Slices to track forward/backward from the prompted slice. Left unbounded,
 # propagate_in_video tracks across the whole volume by default, which lets
 # the tracker drift onto unrelated small blobs far from where the user drew
@@ -24,13 +30,13 @@ MAX_FRAMES_TO_TRACK = 60
 
 
 def _resize_to_rgb(imgs: np.ndarray, size: int = SAM2_SIZE) -> np.ndarray:
-    """(D, H, W) uint8 -> (D, 3, size, size) float32 in [0, 1]."""
+    """(D, H, W) uint8 -> (D, 3, size, size) float32, ImageNet-normalized."""
     d = imgs.shape[0]
     out = np.zeros((d, 3, size, size), dtype=np.float32)
     for z in range(d):
         img = PILImage.fromarray(imgs[z]).resize((size, size), PILImage.BILINEAR)
         arr = np.array(img, dtype=np.float32) / 255.0
-        out[z] = np.stack([arr, arr, arr], axis=0)
+        out[z] = (np.stack([arr, arr, arr], axis=0) - IMG_MEAN) / IMG_STD
     return out
 
 
