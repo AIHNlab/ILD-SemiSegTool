@@ -163,7 +163,7 @@ Start the server:
 
   cd /home/aihn/Documents/Github/ILD-SemiSegTool
   conda activate ild-ohif
-  python -m monailabel.main start_server --app radiology --studies http://localhost:8042/dicom-web --conf models nnunet_lung,nnunet_ild,sam2_ild
+  python -m monailabel.main start_server --app radiology --studies http://localhost:8042/dicom-web --conf models nnunet_lung,nnunet_ild,nnunet_airways,sam2_ild
 
 Wait for: Uvicorn running on http://0.0.0.0:8000
 ("nnUNet_raw/_preprocessed/_results is not defined" warnings on

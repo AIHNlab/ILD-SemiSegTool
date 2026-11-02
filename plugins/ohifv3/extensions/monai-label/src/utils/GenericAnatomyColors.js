@@ -419,6 +419,7 @@ export const GenericAnatomyColors = [
   { label: 'cervical vertebral column', value: rgbToHex(255, 255, 207) },
   { label: 'thorax', value: rgbToHex(177, 122, 101) },
   { label: 'trachea', value: rgbToHex(182, 228, 255) },
+  { label: 'airway', value: rgbToHex(255, 0, 0) },
   { label: 'bronchi', value: rgbToHex(175, 216, 244) },
   { label: 'lung', value: rgbToHex(197, 165, 145) },
   { label: 'lung tumor', value: rgbToHex(144, 238, 144) },

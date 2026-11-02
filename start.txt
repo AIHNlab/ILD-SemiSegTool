@@ -19,7 +19,7 @@ PowerShell: Start-Service Orthanc
 2. Start the MONAI Label server
 --------------------------------------------------------------------
   cd C:\Users\GoFOODAppPC\Documents\Github\ILD-OHIF-Tool
-  C:\Users\GoFOODAppPC\miniconda3\envs\monai081\python.exe -m monailabel.main start_server --app radiology --studies http://localhost:8042/dicom-web --conf models nnunet_lung,nnunet_ild,sam2_ild
+  C:\Users\GoFOODAppPC\miniconda3\envs\monai081\python.exe -m monailabel.main start_server --app radiology --studies http://localhost:8042/dicom-web --conf models nnunet_lung,nnunet_ild,nnunet_airways,sam2_ild
 
 Wait for: Uvicorn running on http://0.0.0.0:8000
 Keep this terminal open — closing it stops the server.

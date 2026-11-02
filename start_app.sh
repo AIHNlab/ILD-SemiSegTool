@@ -33,7 +33,7 @@ else
   cd "$REPO_DIR"
   nohup "$PY" -m monailabel.main start_server --app radiology \
     --studies http://localhost:8042/dicom-web \
-    --conf models nnunet_lung,nnunet_ild,sam2_ild \
+    --conf models nnunet_lung,nnunet_ild,nnunet_airways,sam2_ild \
     >"$LOG_DIR/monailabel_server.log" 2>&1 &
   echo "    log: $LOG_DIR/monailabel_server.log"
 fi

@@ -81,5 +81,5 @@ cat <<EOF
 Done. Start the server with:
   deactivate 2>/dev/null; conda activate $ENV_NAME   # leave any active venv first
   cd $REPO_DIR
-  python -m monailabel.main start_server --app radiology --studies http://localhost:8042/dicom-web --conf models nnunet_lung,nnunet_ild,sam2_ild
+  python -m monailabel.main start_server --app radiology --studies http://localhost:8042/dicom-web --conf models nnunet_lung,nnunet_ild,nnunet_airways,sam2_ild
 EOF
