@@ -3,3 +3,5 @@
 data/
 backups/
 users.generated.yml
+.env.from-backup
+data.before-restore-*/

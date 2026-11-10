@@ -43,7 +43,8 @@ Use Chrome, Edge or Safari - Firefox renders the images grey.
 ./manage.sh remove-user bob       # remove the login; studies stay on disk
 ./manage.sh list-users
 ./manage.sh status                # all containers + GPU use
-./manage.sh backup                # archive accounts, studies and saves into backups/
+./manage.sh backup                # archive accounts, studies, saves and .env into backups/
+./manage.sh restore backups/ild-backup-YYYYMMDD-HHMM.tar.gz   # roll back to a backup
 ./manage.sh up                    # apply .env changes / restart after an update
 ```
 
@@ -78,6 +79,32 @@ All settings are in `.env` (documented in `.env.example`): the address and
 HTTPS mode, ports, model weight paths, which models to load, how long a
 login lasts, and where data is stored. Back up the `DATA_DIR` folder (or
 use `./manage.sh backup`).
+
+## Backup and restore
+
+`./manage.sh backup` writes one `.tar.gz` into `backups/` with everything
+needed to rebuild the server: accounts and the login key, every user's studies
+(Orthanc), their saved segmentations, and `.env`. The study stores pause for
+the few seconds it takes. Size is roughly the stored size of all uploaded
+studies (CT barely compresses further); each save adds ~1 MB. The AI
+backend's image caches are left out - they are re-downloaded from Orthanc.
+Copy backups off the server too (another disk or machine).
+
+`./manage.sh restore FILE` replaces all current data with the backup: it asks
+you to type `restore`, stops everything, moves the current data aside to
+`data.before-restore-<time>/` (so you can go back), unpacks, and starts again.
+The backup's settings are put next to `.env` as `.env.from-backup`; the
+current `.env` stays in use.
+
+**Moving to a new machine:** clone the repo and copy the backup over. Then, in
+`docker/`:
+
+```bash
+tar -xzf /path/to/ild-backup-....tar.gz .env   # the old settings become .env
+# edit .env if the model weight paths or address differ on this machine
+./manage.sh build
+./manage.sh restore /path/to/ild-backup-....tar.gz
+```
 
 ## Security notes
 

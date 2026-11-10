@@ -146,16 +146,9 @@ class MyApp(MONAILabelApp):
             self._user_datastores_lock = threading.Lock()
         with self._user_datastores_lock:
             if user not in self._user_datastores:
-                from monailabel.datastore.dicom import DICOMwebClientX, DICOMWebDatastore
+                from monailabel.datastore.dicom import DICOMwebClientX
 
-                class UserDatastore(DICOMWebDatastore):
-                    # The base class skips its index refresh after a delete when
-                    # auto_reload is on (always, for DICOMweb), leaving it to a file
-                    # watcher that ignores .nrrd saves - so a deleted save stayed
-                    # listed. Re-sync the index from disk explicitly.
-                    def remove_label(self, label_id, label_tag):
-                        super().remove_label(label_id, label_tag)
-                        self.refresh()
+                from lib.user_datastore import UserDatastore
 
                 url = self.USER_ORTHANC_URL.format(user=user)
                 logger.info(f"Creating datastore for user '{user}': {url}")

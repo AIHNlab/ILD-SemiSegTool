@@ -16,6 +16,8 @@ env_set() {
   mv .env.tmp .env
 }
 data_dir() { env_get DATA_DIR ./data; }
+# Absolute path of a directory, in the form `docker run -v` accepts (C:/... on Git Bash).
+abs_path() { (cd "$1" && { pwd -W 2>/dev/null || pwd; }); }
 # NEW_PASSWORD (optional) sets the password without a prompt, e.g. for scripted setup.
 login_cli() { docker compose run --rm --no-deps ${NEW_PASSWORD:+-e NEW_PASSWORD} login python app.py "$@"; }
 
@@ -151,14 +153,53 @@ case "$cmd" in
     need_env; login_cli list
     ;;
   backup)
-    need_env; d=$(data_dir); mkdir -p backups; f="backups/ild-backup-$(date +%Y%m%d-%H%M).tar.gz"
+    need_env; d=$(data_dir); mkdir -p backups; name="ild-backup-$(date +%Y%m%d-%H%M).tar.gz"
     echo "Pausing the study stores briefly for a consistent copy..."
     orthancs=$(docker compose ps --services | grep '^orthanc-' || true)
-    [ -n "$orthancs" ] && docker compose stop $orthancs
-    # Image caches (*.nii.gz) are rebuilt automatically from Orthanc - not worth backing up.
-    tar -czf "$f" --exclude='*.nii.gz' -C "$d" .
-    [ -n "$orthancs" ] && docker compose start $orthancs
-    echo "Backup written: $f ($(du -h "$f" | cut -f1))"
+    if [ -n "$orthancs" ]; then
+      docker compose stop $orthancs
+      # Restart them however this ends, even if the backup fails.
+      trap 'echo "Restarting the study stores..."; docker compose start $orthancs >/dev/null' EXIT
+    fi
+    # The containers write their data as root, so archive it from a container
+    # (as root) too, then hand the file to the current user. The AI backend's
+    # image caches (*.dcm copies, *.nii.gz) are re-downloaded from Orthanc when
+    # needed - Orthanc's own store (no .dcm names) holds the originals.
+    # Archive layout: data/... plus .env (the settings, for rebuilding on a new
+    # machine). Both are mounted under /src since busybox tar takes only one -C.
+    MSYS_NO_PATHCONV=1 docker run --rm \
+      -v "$(abs_path "$d"):/src/data:ro" -v "$(abs_path .)/.env:/src/.env:ro" -v "$(abs_path backups):/backups" alpine:3.20 \
+      sh -c "tar -czf /backups/$name.part --exclude='*.nii.gz' --exclude='*.dcm' -C /src data .env \
+             && mv /backups/$name.part /backups/$name && chown $(id -u):$(id -g) /backups/$name" \
+      || { rm -f "backups/$name.part"; die "backup failed - nothing was written"; }
+    echo "Backup written: backups/$name ($(du -h "backups/$name" | cut -f1))"
+    ;;
+  restore)
+    need_env; f=${1:?usage: restore BACKUP_FILE (e.g. backups/ild-backup-20261110-2226.tar.gz)}
+    [ -f "$f" ] || die "no such file: $f"
+    d=$(data_dir); stamp=$(date +%Y%m%d-%H%M%S); old="${d%/}.before-restore-$stamp"
+    echo "This replaces ALL current data - accounts, studies, saved segmentations - with $f."
+    echo "Everything is stopped meanwhile. The current data is kept in $old, in case you need it back."
+    printf "Type 'restore' to continue: "; read -r ans
+    [ "$ans" = restore ] || die "cancelled - nothing changed"
+    docker compose down
+    if [ -d "$d" ]; then mv "$d" "$old"; fi
+    mkdir -p "$d"
+    # Unpack as root (the containers' files are root-owned). The backup's settings
+    # file is put aside as .env.from-backup - the current .env stays in use.
+    # Older backups have the data at the top level instead of under data/.
+    MSYS_NO_PATHCONV=1 docker run --rm \
+      -v "$(abs_path "$d"):/out/data" -v "$(abs_path "$(dirname "$f")"):/b:ro" -v "$(abs_path .):/cfg" alpine:3.20 \
+      sh -c "F='/b/$(basename "$f")'; \
+             if tar -tzf \"\$F\" | grep -q '^data/'; then tar -xzf \"\$F\" -C /out; else tar -xzf \"\$F\" -C /out/data; fi \
+             && if [ -f /out/.env ]; then cp /out/.env /cfg/.env.from-backup && chown $(id -u):$(id -g) /cfg/.env.from-backup; fi" \
+      || die "unpacking failed - your previous data is untouched in $old (move it back to $d to undo)"
+    echo "Restored. Starting everything..."
+    "$0" up
+    echo
+    echo "Done. Check that logins, studies and saves look right, then delete the old copy:"
+    echo "  docker run --rm -v \"$(abs_path "$(dirname "$old")")\":/p alpine:3.20 rm -rf \"/p/$(basename "$old")\""
+    [ -f .env.from-backup ] && echo "The backup's settings are in .env.from-backup (only needed when moving to a new machine)."
     ;;
   help | *)
     cat <<'EOF'
@@ -182,7 +223,8 @@ Monitoring
   progress                  watch AI runs live, with progress bars
   user-logs NAME [SINCE]    everything about one user's recent activity/errors
   restart [SERVICE]         restart one service (or all)
-  backup                    archive accounts, studies and saves into backups/
+  backup                    archive accounts, studies, saves and .env into backups/
+  restore FILE              replace all data with a backup (current data is kept aside)
 EOF
     ;;
 esac
