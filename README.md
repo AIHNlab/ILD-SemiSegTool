@@ -14,15 +14,15 @@ Segmentation of Interstitial Lung Disease in Thoracic CT"* (TIA 2026 @ MICCAI
 
 Runs on **Windows, macOS or Linux** with Docker. An NVIDIA GPU is used
 automatically when Docker can reach one. Without a GPU, everything still
-works on the CPU; automatic segmentation then takes minutes instead of
-seconds.
+works on the CPU, just slower: a lung segmentation takes about 3–4 minutes
+instead of 1, and a MedSAM2 box about 45 s instead of 10 s.
 
 **1. Install Docker**
 
 | OS | Install | Notes |
 |---|---|---|
 | Windows 10/11 | [Docker Desktop](https://docs.docker.com/desktop/setup/install/windows-install/) (WSL 2 backend) | Run the commands below in **Git Bash** (comes with [Git for Windows](https://git-scm.com/download/win)) or a WSL terminal. NVIDIA GPUs work through WSL 2 with a current NVIDIA driver. |
-| macOS (Intel or Apple Silicon) | [Docker Desktop](https://docs.docker.com/desktop/setup/install/mac-install/) | CPU only. In Docker Desktop → Settings → Resources, give Docker at least **12 GB memory**. |
+| macOS (Intel or Apple Silicon) | [Docker Desktop](https://docs.docker.com/desktop/setup/install/mac-install/) | CPU only. In Docker Desktop → Settings → Resources, give Docker at least **8 GB memory** (an AI run peaks at about 4.5 GB). |
 | Linux | [Docker Engine](https://docs.docker.com/engine/install/) + Compose plugin | For a GPU, also install the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html). |
 
 You also need the model weights (see [Model weights](#model-weights)).
