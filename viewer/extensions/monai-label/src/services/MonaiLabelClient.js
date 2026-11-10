@@ -126,7 +126,7 @@ export default class MonaiLabelClient {
 
   // Combines the latest saved lung + ILD-class segmentations for this
   // image into 12-region (side x zone x depth) volumetric statistics -
-  // see radiology/lib/regional_stats.py. A 422 response means one of the
+  // see backend/lib/regional_stats.py. A 422 response means one of the
   // two required saves (nnunet_lung, nnunet_ild/sam2_ild) doesn't exist
   // yet for this image; that's a normal response to check for, not a
   // thrown error.
@@ -143,7 +143,7 @@ export default class MonaiLabelClient {
 
   // Resamples the image to 1mm isotropic spacing and crops it to the body
   // bounding box, in place, using the functions in
-  // preprocessing/preprocess_test_ct.py (see radiology/lib/preprocess.py).
+  // preprocessing/preprocess_test_ct.py (see backend/lib/preprocess.py).
   // Every later infer() / regional_stats() call for this image sees the
   // preprocessed volume too, since the backend overwrites its own cached
   // copy rather than storing a separate preprocessed version.

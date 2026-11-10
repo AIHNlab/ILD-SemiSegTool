@@ -1,0 +1,5 @@
+# Added by manage.sh when GPU=yes, or GPU=auto and Docker can reach an
+# NVIDIA GPU: gives the AI backend the GPU. Without this file it runs on CPU.
+services:
+  monailabel:
+    gpus: all

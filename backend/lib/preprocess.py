@@ -7,7 +7,7 @@ trained on data prepared the same way - see the SNF preprocessing script's
 history) and maps the result back onto the original image's grid via
 map_result_to_original(), so segmentation "just works" without any separate
 step. preprocess_image() below is a read-only preview for the OHIF panel's
-"Preprocess Slices" button (see radiology/lib/regional_stats.py-style
+"Preprocess Slices" button (see backend/lib/regional_stats.py-style
 endpoints in patch_monailabel_datastore.py) - it reports the size/spacing
 this transform would produce without writing anything, so there's nothing
 here that could make the datastore's cached image and the OHIF viewport
@@ -21,7 +21,7 @@ from typing import Any, Dict
 import SimpleITK as sitk
 
 # preprocessing/ lives at the repo root, a sibling of this app's own
-# directory (radiology/), not inside it - add the repo root to sys.path so
+# directory (backend/), not inside it - add the repo root to sys.path so
 # it can be imported without duplicating its logic here.
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if _REPO_ROOT not in sys.path:

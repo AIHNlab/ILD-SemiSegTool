@@ -10,7 +10,7 @@
 # limitations under the License.
 
 
-# The checkpoint_ild.pt weights (see radiology/model/sam2/) were fine-tuned
+# The checkpoint_ild.pt weights (see backend/model/sam2/) were fine-tuned
 # with bowang-lab/MedSAM2, whose sam2.build_sam module adds
 # build_sam2_video_predictor_npz - not present in facebookresearch/sam2.
 #

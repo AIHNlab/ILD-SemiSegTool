@@ -2,7 +2,7 @@
 extension needs that stock monailabel doesn't provide:
 
 1. GET /datastore/label/list?image=<id> - the "Load Segmentation" picker
-   (plugins/ohifv3/extensions/monai-label, MonaiLabelClient.list_labels)
+   (viewer/extensions/monai-label, MonaiLabelClient.list_labels)
    needs a JSON array of {"tag": ..., "info": {...}} for an image. Stock
    monailabel only has a tag->label_id mapping
    (Datastore.get_labels_by_image_id) with no HTTP endpoint exposing it,
@@ -25,7 +25,7 @@ Each patch lives outside site-packages (there's no vendored monailabel
 fork), so it's applied here instead - idempotent, safe to re-run,
 including after a monailabel upgrade that overwrites previously-applied
 patches (each patch detects its own marker already present and no-ops).
-Run via setup_linux.sh / setup_mac.sh / setup_windows.ps1, or by hand after
+Run by docker/monailabel/Dockerfile at image build, or by hand after
 any `pip install --upgrade monailabel`.
 """
 

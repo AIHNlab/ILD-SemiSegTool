@@ -43,7 +43,7 @@ const EXCLUDE_SHAPE_TOOLS = {
 };
 
 // Half-width of the local neighborhood a point prompt expands to, matching
-// nnU-Net's own XY_MIN_SIZE=96 padding (radiology/lib/infers/nnunet.py) -
+// nnU-Net's own XY_MIN_SIZE=96 padding (backend/lib/infers/nnunet.py) -
 // keep these in sync, this only affects which merge region gets protected
 // on the frontend, not what the backend actually crops/classifies.
 const POINT_NEIGHBORHOOD_RADIUS = 48;

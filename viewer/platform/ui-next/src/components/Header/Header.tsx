@@ -1,4 +1,4 @@
-import React, { ReactNode } from 'react';
+import React, { ReactNode, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import classNames from 'classnames';
 import {
@@ -26,6 +26,9 @@ interface HeaderProps {
   isSticky?: boolean;
   WhiteLabeling?: {
     createLogoComponentFn?: (React: any, props: any) => ReactNode;
+    // Extra settings-menu items from the app config, appended after the built-in ones.
+    // Called each time the menu opens, so items can reflect state loaded later.
+    getMenuOptions?: () => HeaderProps['menuOptions'];
   };
   PatientInfo?: ReactNode;
   Secondary?: ReactNode;
@@ -43,6 +46,9 @@ function Header({
   ...props
 }: HeaderProps): ReactNode {
   const { t } = useTranslation('Header');
+  // Bumped when the settings menu opens, so getMenuOptions is re-read.
+  const [, setMenuOpenCount] = useState(0);
+  const allMenuOptions = [...menuOptions, ...(WhiteLabeling?.getMenuOptions?.() ?? [])];
 
   const onClickReturn = () => {
     if (isReturnEnabled && onClickReturnButton) {
@@ -79,7 +85,7 @@ function Header({
           {PatientInfo}
           <div className="border-primary-dark mx-1.5 h-[25px] border-r"></div>
           <div className="flex-shrink-0">
-            <DropdownMenu>
+            <DropdownMenu onOpenChange={open => open && setMenuOpenCount(n => n + 1)}>
               <DropdownMenuTrigger asChild>
                 <Button
                   variant="ghost"
@@ -90,7 +96,7 @@ function Header({
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
-                {menuOptions.map((option, index) => {
+                {allMenuOptions.map((option, index) => {
                   const IconComponent = option.icon
                     ? Icons[option.icon as keyof typeof Icons]
                     : null;

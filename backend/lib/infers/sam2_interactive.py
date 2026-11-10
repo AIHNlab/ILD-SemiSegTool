@@ -191,7 +191,10 @@ class SAM2InteractiveInferTask(BasicInferTask):
         import torch
 
         image_path = request.get("image")
-        device = request.get("device", "cuda")
+        # MONAI Label asks for "cuda" by default; fall back to CPU on machines without a GPU.
+        device = request.get("device") or "cuda"
+        if str(device).startswith("cuda") and not torch.cuda.is_available():
+            device = "cpu"
         foreground = request.get("foreground", [])  # [[x, y, z], ...]
         background = request.get("background", [])  # [[x, y, z], ...]
         roi = request.get("roi")  # {"start": [xmin, ymin, z], "end": [xmax, ymax, z]}

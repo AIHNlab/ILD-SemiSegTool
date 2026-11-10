@@ -6,7 +6,7 @@ requiring a separate lung segmentation.
 This is the fallback path for when no dedicated lung mask is available (i.e.
 the user ran only the ILD model, not the lung model, in the app). When a
 lung segmentation *has* been run and saved, prefer
-`radiology/lib/regional_stats.py::compute_regional_stats`, which derives the
+`backend/lib/regional_stats.py::compute_regional_stats`, which derives the
 regions from a real trained lung segmentation and is more reliable for the
 left/right split (see below) - this script exists to still produce a result
 when that isn't available.

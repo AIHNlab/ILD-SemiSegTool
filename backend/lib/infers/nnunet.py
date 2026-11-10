@@ -23,9 +23,13 @@ class NNUNet(BasicInferTask):
         self._label_colors = label_colors or {}
 
         from nnunetv2.inference.predict_from_raw_data import nnUNetPredictor
-        device = torch.device("cuda", 0) if torch.cuda.is_available() else torch.device("cpu")
+        on_gpu = torch.cuda.is_available()
+        device = torch.device("cuda", 0) if on_gpu else torch.device("cpu")
+        # Mirroring = test-time augmentation: every tile is predicted 8 times
+        # (all 3D flips) and averaged, for a small accuracy gain. On CPU that
+        # turns a ~3 min run into ~25 min, so it is GPU-only.
         self.predictor = nnUNetPredictor(
-            tile_step_size=0.5, use_gaussian=True, use_mirroring=True,
+            tile_step_size=0.5, use_gaussian=True, use_mirroring=on_gpu,
             device=device)
         self.predictor.initialize_from_trained_model_folder(
             model_folder, use_folds=folds, checkpoint_name=checkpoint)

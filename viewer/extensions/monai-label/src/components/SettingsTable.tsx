@@ -24,9 +24,15 @@ export default class SettingsTable extends Component {
     super(props);
     this.onInfo = props.onInfo;
 
+    // Behind the docker/ gateway, app-config.js sets monaiLabelServerUrl to
+    // a same-site path ('/monai/'); a plain local run has no such setting
+    // and keeps talking to <this host>:8000 directly.
+    const configuredUrl = (window as any).config?.monaiLabelServerUrl;
     const url = CookieUtils.getCookieString(
       'MONAILABEL_SERVER_URL',
-      'http://' + window.location.host.split(':')[0] + ':8000/'
+      configuredUrl
+        ? new URL(configuredUrl, window.location.origin).href
+        : 'http://' + window.location.host.split(':')[0] + ':8000/'
     );
     const overlap_segments = CookieUtils.getCookieBool(
       'MONAILABEL_OVERLAP_SEGMENTS',

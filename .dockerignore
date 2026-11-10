@@ -1,0 +1,12 @@
+# Build context for docker/ images is the repo root - keep it small.
+.git
+**/node_modules
+**/__pycache__
+viewer/platform/app/dist
+Annotation_Tool_Test_Data
+docker/data
+docker/backups
+docker/.env
+backend/model
+backend/logs
+*.log

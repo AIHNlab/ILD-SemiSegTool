@@ -12,6 +12,7 @@
 import json
 import logging
 import os
+import threading
 from typing import Dict
 
 import lib.configs
@@ -20,6 +21,7 @@ from lib.infers.deepgrow_pipeline import InferDeepgrowPipeline
 from lib.infers.vertebra_pipeline import InferVertebraPipeline
 
 import monailabel
+from monailabel.config import settings
 from monailabel.interfaces.app import MONAILabelApp
 from monailabel.interfaces.config import TaskConfig
 from monailabel.interfaces.datastore import Datastore
@@ -112,6 +114,60 @@ class MyApp(MONAILabelApp):
         if self.heuristic_planner:
             self.planner.run(datastore)
         return datastore
+
+    # Multi-user mode (docker/docker-compose.yml) sets both of these: every
+    # user gets their own Orthanc (e.g. http://orthanc-anna:8042/dicom-web)
+    # and their own cache folder, so their images, saved labels and
+    # Regional Stats never mix with anyone else's. Unset (plain local run),
+    # the single --studies datastore is used exactly as before.
+    USER_ORTHANC_URL = os.environ.get("ILD_USER_ORTHANC_URL")  # contains "{user}"
+    USER_CACHE_DIR = os.environ.get("ILD_USER_CACHE_DIR")
+
+    # MONAILabelApp stores its datastore in self._datastore and reads that
+    # attribute directly in a few places (e.g. info()), not only through
+    # datastore() - so the attribute itself resolves per user too.
+    @property
+    def _datastore(self) -> Datastore:
+        return self.datastore()
+
+    @_datastore.setter
+    def _datastore(self, value: Datastore):
+        self._default_datastore = value
+
+    def datastore(self) -> Datastore:
+        from lib.user_context import current_user
+
+        user = current_user.get()
+        if not (user and self.USER_ORTHANC_URL and self.USER_CACHE_DIR):
+            return self._default_datastore
+
+        if not hasattr(self, "_user_datastores"):
+            self._user_datastores = {}
+            self._user_datastores_lock = threading.Lock()
+        with self._user_datastores_lock:
+            if user not in self._user_datastores:
+                from monailabel.datastore.dicom import DICOMwebClientX, DICOMWebDatastore
+
+                url = self.USER_ORTHANC_URL.format(user=user)
+                logger.info(f"Creating datastore for user '{user}': {url}")
+                self._user_datastores[user] = DICOMWebDatastore(
+                    client=DICOMwebClientX(url=url),
+                    search_filter=settings.MONAI_LABEL_DICOMWEB_SEARCH_FILTER,
+                    cache_path=os.path.join(self.USER_CACHE_DIR, user),
+                    fetch_by_frame=settings.MONAI_LABEL_DICOMWEB_FETCH_BY_FRAME,
+                    convert_to_nifti=settings.MONAI_LABEL_DICOMWEB_CONVERT_TO_NIFTI,
+                )
+            return self._user_datastores[user]
+
+    # One GPU, many users: runs take turns instead of competing for GPU
+    # memory. (The infer endpoint runs in a worker thread - see
+    # docker/monailabel/Dockerfile - so waiting here never blocks other
+    # users' requests, only other inference runs.)
+    _gpu_lock = threading.Lock()
+
+    def infer(self, request, datastore=None):
+        with self._gpu_lock:
+            return super().infer(request, datastore)
 
     def init_infers(self) -> Dict[str, InferTask]:
         infers: Dict[str, InferTask] = {}

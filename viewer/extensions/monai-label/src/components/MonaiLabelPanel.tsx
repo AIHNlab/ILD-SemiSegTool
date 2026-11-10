@@ -606,7 +606,7 @@ export default class MonaiLabelPanel extends Component<any, any> {
   // cleared and can be shared with another device (see onImportSegmentationFile).
   // A copy is also stored on the server (saveToServer), because Regional
   // Stats reads the latest saved lung/ILD segmentations from the server's
-  // datastore (radiology/lib/regional_stats.py), not from the viewer.
+  // datastore (backend/lib/regional_stats.py), not from the viewer.
   onSaveSegmentation = async () => {
     const fileName = this.exportSegmentationFile();
     if (!fileName) {

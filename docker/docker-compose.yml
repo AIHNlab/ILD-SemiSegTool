@@ -1,0 +1,79 @@
+# The whole tool on one server PC. Settings: .env (see .env.example).
+# Day-to-day use goes through ./manage.sh; per-user Orthanc services are
+# generated into users.generated.yml by `./manage.sh add-user`.
+name: ild-semiseg
+
+services:
+  # Single entry point: HTTPS, login check, the OHIF viewer, and routing
+  # to each user's own Orthanc and to MONAI Label.
+  gateway:
+    build:
+      context: ..
+      dockerfile: docker/gateway/Dockerfile
+    image: ild-gateway:latest
+    restart: unless-stopped
+    ports:
+      - "${HTTP_PORT:-8080}:80"
+      - "${HTTPS_PORT:-8443}:443"
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:-:80}
+    volumes:
+      - ./gateway/app-config.js:/srv/ohif/app-config.js:ro
+      - ${DATA_DIR:-./data}/gateway:/data
+    depends_on:
+      - login
+
+  # Login page + session check. Accounts: ${DATA_DIR}/login/users.json.
+  login:
+    build: ./login
+    image: ild-login:latest
+    restart: unless-stopped
+    environment:
+      SESSION_HOURS: ${SESSION_HOURS:-12}
+    volumes:
+      - ${DATA_DIR:-./data}/login:/data
+
+  # AI backend: one process, models loaded once (on the GPU if there is
+  # one - see docker-compose.gpu.yml); each request works on the logged-in
+  # user's own Orthanc and cache folder.
+  monailabel:
+    build:
+      context: ..
+      dockerfile: docker/monailabel/Dockerfile
+      args:
+        # cu130 (NVIDIA GPU) or cpu - set by manage.sh from GPU= in .env.
+        TORCH_VARIANT: ${TORCH_VARIANT:-cpu}
+    image: ild-monailabel:${TORCH_VARIANT:-cpu}
+    restart: unless-stopped
+    command: >
+      python -m monailabel.main start_server
+      --app /app/backend
+      --studies http://orthanc-unused:8042/dicom-web
+      --conf models ${MODELS}
+      --host 0.0.0.0 --port 8000
+      --uvicorn_app lib.user_context:app
+    environment:
+      ILD_USER_ORTHANC_URL: "http://orthanc-{user}:8042/dicom-web"
+      ILD_USER_CACHE_DIR: /data/users
+      MONAI_LABEL_DICOMWEB_CACHE_PATH: /data/default
+      # Keep backend/lib loaded once: by default MONAI Label re-imports it while
+      # loading the app, which would split lib.user_context (the logged-in user) in two.
+      MONAI_LABEL_RELOAD_APP_LIB: "false"
+    volumes:
+      # App code from this repo - a code change only needs `./manage.sh restart monailabel`.
+      - ../backend/main.py:/app/backend/main.py:ro
+      - ../backend/lib:/app/backend/lib:ro
+      - ../backend/bin:/app/backend/bin:ro
+      - ../preprocessing:/app/preprocessing:ro
+      - type: bind
+        source: ${NNUNET_RESULTS_DIR}
+        target: /app/backend/model/nnUNet_results
+      - type: bind
+        source: ${SAM2_ILD_CHECKPOINT}
+        target: /app/backend/model/sam2/checkpoint_ild.pt
+        read_only: true
+      - ${DATA_DIR:-./data}/monailabel:/data
+      - ${DATA_DIR:-./data}/monailabel/logs:/app/backend/logs
+    # nnU-Net hands the CT volume between its worker processes through shared
+    # memory; Docker's default (64 MB) makes those workers die mid-run.
+    shm_size: 8gb

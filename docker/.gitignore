@@ -1,0 +1,5 @@
+# Local settings and all runtime data stay out of git.
+.env
+data/
+backups/
+users.generated.yml

@@ -23,7 +23,7 @@ import './RegionalStats.css';
 // - there's no dynamic lookup anywhere else in this extension either).
 const SEGMENTATION_ID = '1';
 
-// Not a real segmentation class (see radiology/lib/regional_stats.py's
+// Not a real segmentation class (see backend/lib/regional_stats.py's
 // "unclassified" bucket) so it has no entry in the app's shared anatomy
 // color table - pick a neutral, deliberately muted gray instead of letting
 // getLabelColor() hash it to an arbitrary color.

@@ -119,7 +119,7 @@ def resample_to_spacing(img, new_spacing=(1.0, 1.0, 1.0)):
 def preprocess_ct_image(img: sitk.Image, target_spacing=(1.0, 1.0, 1.0)) -> sitk.Image:
     """Resample to isotropic spacing, then crop to the body bounding box.
 
-    Shared by the batch CLI below and by radiology/lib/preprocess.py (which
+    Shared by the batch CLI below and by backend/lib/preprocess.py (which
     applies this to a single datastore image on demand from the OHIF panel).
     """
     img = resample_to_spacing(img, target_spacing)
@@ -139,7 +139,7 @@ def preprocess_ct_image(img: sitk.Image, target_spacing=(1.0, 1.0, 1.0)) -> sitk
     # sign flips), which silently shifted the cropped volume's origin to
     # the wrong physical location - harmless for a human eyeballing the
     # cropped file directly, but it broke resampling a result computed on
-    # this crop back onto the original image (radiology/lib/preprocess.py's
+    # this crop back onto the original image (backend/lib/preprocess.py's
     # map_result_to_original), which depends on this origin being exactly
     # right.
     out.SetOrigin(img.TransformIndexToPhysicalPoint((int(xmin), int(ymin), int(zmin))))

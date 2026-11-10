@@ -1,0 +1,74 @@
+# Single entry point for the whole tool. Every path except the login page
+# requires a valid session (checked by the login service), and the
+# username it returns decides which Orthanc a request goes to.
+{
+	admin off
+}
+
+{$SITE_ADDRESS::80} {
+	log {
+		output stdout
+		# Readable timestamps, so `manage.sh user-logs` needs no date conversion.
+		format json {
+			time_format iso8601
+		}
+	}
+	encode zstd gzip
+
+	@login path /login /logout
+	handle @login {
+		reverse_proxy login:8000
+	}
+
+	handle {
+		route {
+			# Never trust identity headers coming from the browser.
+			request_header -X-User
+			request_header -X-User-Admin
+			forward_auth login:8000 {
+				uri /auth/check
+				copy_headers X-User X-User-Admin
+			}
+			# Puts the username on every access-log line (find a user's requests in the logs).
+			log_append user {http.request.header.X-User}
+
+			handle / {
+				redir * /ohif/ 302
+			}
+			# The logged-in username, for the viewer's settings menu.
+			handle /whoami {
+				header Cache-Control no-store
+				respond "{http.request.header.X-User}" 200
+			}
+
+			# The user's own Orthanc: REST API + Orthanc Explorer 2 (upload page) ...
+			handle_path /orthanc/* {
+				reverse_proxy orthanc-{http.request.header.X-User}:8042
+			}
+			# ... and its DICOMweb API, which the viewer loads images from.
+			handle /dicom-web/* {
+				reverse_proxy orthanc-{http.request.header.X-User}:8042
+			}
+
+			handle_path /monai/* {
+				reverse_proxy monailabel:8000 {
+					transport http {
+						# Inference can wait in the GPU queue behind other users' runs.
+						read_timeout 30m
+					}
+				}
+			}
+
+			handle_path /ohif/* {
+				root * /srv/ohif
+				# Lets the viewer use SharedArrayBuffer for faster volume loading.
+				header Cross-Origin-Opener-Policy same-origin
+				header Cross-Origin-Embedder-Policy require-corp
+				try_files {path} /index.html
+				file_server
+			}
+
+			respond 404
+		}
+	}
+}
