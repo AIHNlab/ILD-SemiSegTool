@@ -148,9 +148,18 @@ class MyApp(MONAILabelApp):
             if user not in self._user_datastores:
                 from monailabel.datastore.dicom import DICOMwebClientX, DICOMWebDatastore
 
+                class UserDatastore(DICOMWebDatastore):
+                    # The base class skips its index refresh after a delete when
+                    # auto_reload is on (always, for DICOMweb), leaving it to a file
+                    # watcher that ignores .nrrd saves - so a deleted save stayed
+                    # listed. Re-sync the index from disk explicitly.
+                    def remove_label(self, label_id, label_tag):
+                        super().remove_label(label_id, label_tag)
+                        self.refresh()
+
                 url = self.USER_ORTHANC_URL.format(user=user)
                 logger.info(f"Creating datastore for user '{user}': {url}")
-                self._user_datastores[user] = DICOMWebDatastore(
+                self._user_datastores[user] = UserDatastore(
                     client=DICOMwebClientX(url=url),
                     search_filter=settings.MONAI_LABEL_DICOMWEB_SEARCH_FILTER,
                     cache_path=os.path.join(self.USER_CACHE_DIR, user),
@@ -159,14 +168,13 @@ class MyApp(MONAILabelApp):
                 )
             return self._user_datastores[user]
 
-    # One GPU, many users: runs take turns instead of competing for GPU
-    # memory. (The infer endpoint runs in a worker thread - see
-    # docker/monailabel/Dockerfile - so waiting here never blocks other
-    # users' requests, only other inference runs.)
-    _gpu_lock = threading.Lock()
-
+    # One GPU, many users: runs take turns, in arrival order (lib/run_queue.py).
+    # The infer endpoint runs in a worker thread - see docker/monailabel/Dockerfile -
+    # so waiting here never blocks other users' requests, only other AI runs.
     def infer(self, request, datastore=None):
-        with self._gpu_lock:
+        from lib import run_queue
+
+        with run_queue.turn(request.get("run_id")):
             return super().infer(request, datastore)
 
     def init_infers(self) -> Dict[str, InferTask]:

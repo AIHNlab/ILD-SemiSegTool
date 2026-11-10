@@ -189,17 +189,17 @@ class NNUNet(BasicInferTask):
             preprocessed_img, original_img = preprocess_for_inference(image_path)
             sitk.WriteImage(preprocessed_img, os.path.join(in_dir, "case_0000.nii.gz"))
 
-        # num_processes_preprocessing/num_processes_segmentation_export default to
-        # 8 each (nnunetv2.configuration.default_num_processes), spinning up ~16
-        # fresh multiprocessing workers (Manager-based Events/Queues, over named
-        # pipes on Windows) for what's always exactly one case here. Repeated
-        # inference calls against this long-running server eventually exhaust
-        # Windows' named-pipe/handle pool that way (WinError 1450). One case
-        # gains nothing from parallel workers anyway, so keep both at 1.
-        self.predictor.predict_from_files(in_dir, out_dir,
-                                          save_probabilities=False, overwrite=True,
-                                          num_processes_preprocessing=1,
-                                          num_processes_segmentation_export=1)
+        # Sequential = no worker processes. predict_from_files() forks preprocessing/
+        # export workers from this multi-threaded server; a fork taken while another
+        # thread holds a lock leaves the worker deadlocked forever (seen in practice:
+        # worker stuck in futex, run never finishes, AI lock held for everyone).
+        # It also leaked named pipes on Windows (WinError 1450). There is always
+        # exactly one case here, so workers gain nothing.
+        # Explicit file lists, not folders: given a folder, nnU-Net lists it with a
+        # 12-process fork Pool (create_lists_from_splitted_dataset_folder) - same hang.
+        self.predictor.predict_from_files_sequential([[os.path.join(in_dir, "case_0000.nii.gz")]],
+                                                     [os.path.join(out_dir, "case")],
+                                                     save_probabilities=False, overwrite=True)
         result = glob.glob(os.path.join(out_dir, "*.nii.gz"))[0]
 
         # uint8, not uint16: the OHIF client (MonaiLabelPanel.updateView) reads the

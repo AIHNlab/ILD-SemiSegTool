@@ -14,7 +14,7 @@ limitations under the License.
 import React, { forwardRef, useEffect, useImperativeHandle, useState } from 'react';
 import ModelSelector from '../ModelSelector';
 import { useActionTab, ActionTabProps } from './useActionTab';
-import { hideNotification, describeError } from '../../utils/GenericUtils';
+import { hideNotification, describeError, runStatusUpdater } from '../../utils/GenericUtils';
 
 const ORGAN_PRESETS = {
   organs: [
@@ -150,7 +150,7 @@ const ClassPrompts = forwardRef<any, ActionTabProps>((props, ref) => {
     const nid = notification.show({
       title: 'MONAI Label - ' + model,
       message: 'Running Class Based Inference...',
-      type: 'info',
+      type: 'loading',
       autoClose: false,
     });
 
@@ -180,7 +180,10 @@ const ClassPrompts = forwardRef<any, ActionTabProps>((props, ref) => {
     // itself already finished.
     try {
       const { displaySet } = getActiveViewportInfo();
-      const response = await props.client().infer(model, displaySet.SeriesInstanceUID, params);
+      const response = await props.client().infer(
+        model, displaySet.SeriesInstanceUID, params, undefined, undefined,
+        runStatusUpdater(notification, nid, 'MONAI Label - ' + model, 'Running Class Based Inference...')
+      );
 
       hideNotification(nid, notification);
       if (response.status !== 200) {

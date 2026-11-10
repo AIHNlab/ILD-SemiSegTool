@@ -54,6 +54,7 @@ class UINotificationService {
    * @param {number} [notification.duration=5000] - The duration to show the notification (in milliseconds)
    * @param {'top-left' | 'top-right' | 'bottom-left' | 'bottom-right' | 'top-center' | 'bottom-center'} [notification.position='bottom-right'] - The position of the notification
    * @param {ToastType} [notification.type='info'] - The type of the notification
+   * @param {string} [notification.id] - Pass the id of a shown notification to update it in place
    * @param {boolean} [notification.autoClose=true] - Whether the notification should auto-close
    * @param {Promise} [notification.promise] - A promise to track for loading, success, and error states
    * @param {object} [notification.promiseMessages] - Custom messages for promise states
@@ -71,7 +72,9 @@ class UINotificationService {
     autoClose = true,
     promise,
     promiseMessages,
+    id,
   }: {
+    id?: string;
     title: string;
     message: string | ((data?: any) => string);
     duration?: number;
@@ -139,6 +142,7 @@ class UINotificationService {
     }
 
     return serviceImplementation._show({
+      id,
       title,
       message,
       duration,

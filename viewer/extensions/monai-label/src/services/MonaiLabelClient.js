@@ -23,7 +23,42 @@ export default class MonaiLabelClient {
     return await MonaiLabelClient.api_get(url.toString());
   }
 
-  async infer(model, image, params, result_extension = '.nrrd', output='image') {
+  // onStatus (optional) is called with {state: 'queued', ahead: N} or
+  // {state: 'running'} while the request is pending: the backend runs one AI
+  // job at a time (backend/lib/run_queue.py), so a run may wait for others.
+  async infer(model, image, params, result_extension = '.nrrd', output = 'image', onStatus = null) {
+    if (!onStatus) {
+      return this._infer(model, image, params, result_extension, output);
+    }
+    params.run_id = Math.random().toString(36).slice(2) + Date.now().toString(36);
+    const statusUrl = new URL('run-status/' + params.run_id, this.server_url).toString();
+    let done = false;
+    let last = '';
+    const poll = async () => {
+      if (done) return;
+      try {
+        const r = await axios.get(statusUrl);
+        const key = JSON.stringify(r.data);
+        // `done` again: the run may have finished while this request was out.
+        if (!done && r.data.state !== 'unknown' && key !== last) {
+          last = key;
+          onStatus(r.data);
+        }
+      } catch (e) {
+        // status is cosmetic - never let it break the run
+      }
+    };
+    const timer = setInterval(poll, 1000);
+    setTimeout(poll, 300);
+    try {
+      return await this._infer(model, image, params, result_extension, output);
+    } finally {
+      done = true;
+      clearInterval(timer);
+    }
+  }
+
+  async _infer(model, image, params, result_extension, output) {
     console.log('Running Infer for: ', { model, image, params, result_extension, output });
 
     let url = new URL('infer/' + encodeURIComponent(model), this.server_url);
@@ -122,6 +157,14 @@ export default class MonaiLabelClient {
     url = url.toString();
 
     return await MonaiLabelClient.api_get_data(url, 'json');
+  }
+
+  // The saved .nrrd file itself, as an ArrayBuffer (response.data).
+  async download_label(image, tag) {
+    let url = new URL('datastore/label', this.server_url);
+    url.searchParams.append('label', image);
+    url.searchParams.append('tag', tag);
+    return await MonaiLabelClient.api_get_data(url.toString(), 'arraybuffer');
   }
 
   // Combines the latest saved lung + ILD-class segmentations for this

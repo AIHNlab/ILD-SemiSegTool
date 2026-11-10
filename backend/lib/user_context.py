@@ -37,16 +37,24 @@ def _user_from_scope(scope):
     return None
 
 
-async def _reject(send):
-    body = json.dumps({"detail": "Not logged in"}).encode()
+async def _json(send, code, data):
+    body = json.dumps(data).encode()
     await send(
         {
             "type": "http.response.start",
-            "status": 401,
-            "headers": [(b"content-type", b"application/json"), (b"content-length", str(len(body)).encode())],
+            "status": code,
+            "headers": [
+                (b"content-type", b"application/json"),
+                (b"content-length", str(len(body)).encode()),
+                (b"cache-control", b"no-store"),
+            ],
         }
     )
     await send({"type": "http.response.body", "body": body})
+
+
+async def _reject(send):
+    await _json(send, 401, {"detail": "Not logged in"})
 
 
 def wrap(inner):
@@ -57,6 +65,12 @@ def wrap(inner):
         user = _user_from_scope(scope)
         if user is None:
             await _reject(send)
+            return
+        if scope["path"].startswith("/run-status/"):
+            # Polled every second while a run is pending - answered here, unlogged.
+            from lib import run_queue
+
+            await _json(send, 200, run_queue.status(scope["path"][len("/run-status/"):]))
             return
         status = {}
 

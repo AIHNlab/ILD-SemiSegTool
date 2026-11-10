@@ -16,7 +16,7 @@ const NotificationProvider = ({ children, service }) => {
   };
 
   const show = useCallback(options => {
-    const { title, message, duration, position, type, promise } = {
+    const { id, title, message, duration, position, type, promise } = {
       ...DEFAULT_OPTIONS,
       ...options,
     };
@@ -35,7 +35,9 @@ const NotificationProvider = ({ children, service }) => {
       });
     }
 
+    // Same id as a toast still on screen = update it in place (sonner).
     return toast[type](title, {
+      ...(id != null ? { id } : {}),
       duration,
       position,
       description: message,

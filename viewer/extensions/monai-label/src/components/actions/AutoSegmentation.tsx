@@ -15,7 +15,8 @@ import React, { forwardRef, useImperativeHandle, useState } from 'react';
 import { cache } from '@cornerstonejs/core';
 import ModelSelector from '../ModelSelector';
 import { useActionTab, ActionTabProps } from './useActionTab';
-import { hideNotification, getLabelColor, describeError } from '../../utils/GenericUtils';
+import { hideNotification, getLabelColor, describeError, runStatusUpdater } from '../../utils/GenericUtils';
+import { showVolumeLoadProgress } from '../../utils/volumeLoadProgress';
 
 function getModels(info) {
   return Object.keys(info.data.models).filter(
@@ -77,19 +78,14 @@ const AutoSegmentation = forwardRef<any, ActionTabProps>((props, ref) => {
     const volumeId = `${displaySet.volumeLoaderSchema}:${displaySet.displaySetInstanceUID}`;
     const volume = cache.getVolume(volumeId);
     if (!volume || !volume.loadStatus?.loaded) {
-      notification.show({
-        title: 'MONAI Label',
-        message: 'Please wait for the image to finish loading before running segmentation',
-        type: 'warning',
-        duration: 4000,
-      });
+      showVolumeLoadProgress(notification, volumeId);
       return;
     }
 
     const nid = notification.show({
       title: 'MONAI Label - ' + model,
       message: 'Running Auto-Segmentation...',
-      type: 'info',
+      type: 'loading',
       autoClose: false,
     });
 
@@ -123,7 +119,10 @@ const AutoSegmentation = forwardRef<any, ActionTabProps>((props, ref) => {
     // spinner would stay stuck forever even though the backend request
     // itself already finished.
     try {
-      const response = await props.client().infer(model, displaySet.SeriesInstanceUID, params);
+      const response = await props.client().infer(
+        model, displaySet.SeriesInstanceUID, params, undefined, undefined,
+        runStatusUpdater(notification, nid, 'MONAI Label - ' + model, 'Running Auto-Segmentation...')
+      );
 
       hideNotification(nid, notification);
       if (response.status !== 200) {

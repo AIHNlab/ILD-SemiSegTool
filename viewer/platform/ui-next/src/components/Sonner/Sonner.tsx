@@ -17,11 +17,10 @@ const Toaster = ({ ...props }: ToasterProps) => {
       }}
       theme="dark"
       richColors="true"
-      toastOptions={{
-        style: {
-          width: '430px', // Set a maximum width
-        },
-      }}
+      // Widen the toaster itself (sonner's --width, default 356px). Setting only
+      // the toast's width made it overflow the right-anchored container, so the
+      // end of longer messages was cut off at the screen edge.
+      style={{ '--width': '430px' } as React.CSSProperties}
       {...props}
     />
   );

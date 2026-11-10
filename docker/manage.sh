@@ -107,6 +107,13 @@ case "$cmd" in
   logs)
     need_env; docker compose logs -f --tail=200 "$@"
     ;;
+  progress)
+    # Live AI output incl. progress bars. `logs` can't show these: they redraw one
+    # line with \r and compose only prints complete lines. Ctrl-C only detaches.
+    need_env; c=$(docker compose ps -q monailabel); [ -n "$c" ] || die "monailabel is not running"
+    echo "Live AI backend output (progress bars appear while a run is active). Ctrl-C to stop watching."
+    docker attach --no-stdin --sig-proxy=false "$c"
+    ;;
   user-logs)
     need_env; u=${1:?usage: user-logs NAME [SINCE, e.g. 2h]}; since=${2:-24h}
     echo "== Requests through the gateway (last $since; status >= 400 marked) =="
@@ -172,6 +179,7 @@ Users
 Monitoring
   status                    containers + GPU (or CPU) use at a glance
   logs [SERVICE]            follow logs (gateway, login, monailabel, orthanc-NAME)
+  progress                  watch AI runs live, with progress bars
   user-logs NAME [SINCE]    everything about one user's recent activity/errors
   restart [SERVICE]         restart one service (or all)
   backup                    archive accounts, studies and saves into backups/

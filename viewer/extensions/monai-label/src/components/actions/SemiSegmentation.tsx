@@ -17,7 +17,7 @@ import ModelSelector from '../ModelSelector';
 import * as cornerstoneTools from '@cornerstonejs/tools';
 import { getEnabledElements } from '@cornerstonejs/core';
 import { useActionTab, ActionTabProps } from './useActionTab';
-import { hideNotification, describeError } from '../../utils/GenericUtils';
+import { hideNotification, describeError, runStatusUpdater } from '../../utils/GenericUtils';
 import { renderAllViewports } from '../../utils/AnnotationHistory';
 
 const SHAPE_TOOLS = {
@@ -769,7 +769,7 @@ const SemiSegmentation = forwardRef<any, ActionTabProps>((props, ref) => {
         prompts.length > 1
           ? `Running Semi-Segmentation Inference (0/${prompts.length})...`
           : 'Running Semi-Segmentation Inference...',
-      type: 'info',
+      type: 'loading',
       autoClose: false,
     });
 
@@ -828,7 +828,14 @@ const SemiSegmentation = forwardRef<any, ActionTabProps>((props, ref) => {
         };
 
         // eslint-disable-next-line no-await-in-loop
-        const response = await props.client().infer(model, displaySet.SeriesInstanceUID, params);
+        const response = await props.client().infer(
+          model, displaySet.SeriesInstanceUID, params, undefined, undefined,
+          runStatusUpdater(notification, nid, 'MONAI Label - ' + model, () =>
+            prompts.length > 1
+              ? `Running Semi-Segmentation Inference (${i + 1}/${prompts.length})...`
+              : 'Running Semi-Segmentation Inference...'
+          )
+        );
 
         if (response.status !== 200) {
           failures++;

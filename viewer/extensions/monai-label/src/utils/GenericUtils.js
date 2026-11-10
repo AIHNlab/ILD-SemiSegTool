@@ -90,6 +90,28 @@ function hideNotification(nid, notification) {
   }
 }
 
+// Returns an onStatus callback for MonaiLabelClient.infer(): rewrites the
+// run's loading notification (nid) in place - "Queued..." while another AI
+// run holds the GPU, then runningMessage plus its progress once this one
+// starts ("preparing image" -> "45%" -> "finishing"; progress comes from the
+// model's own progress bar - see backend/lib/run_queue.py).
+// runningMessage may be a function, for text that changes between calls.
+function runStatusUpdater(notification, nid, title, runningMessage) {
+  return status => {
+    let message;
+    if (status.state === 'queued') {
+      message = `Queued - waiting for ${status.ahead} other AI run${status.ahead === 1 ? '' : 's'} to finish...`;
+    } else {
+      const base = typeof runningMessage === 'function' ? runningMessage() : runningMessage;
+      const p = status.progress;
+      const pct = p && p.total ? Math.floor((p.done * 100) / p.total) : null;
+      const step = pct === null ? 'preparing image' : pct >= 100 ? 'finishing' : `${pct}%`;
+      message = `${base} ${step}`;
+    }
+    notification.show({ id: nid, title, message, type: 'loading' });
+  };
+}
+
 // Turns a failed MonaiLabelClient call into a short, specific string - what
 // the server actually said, or what actually threw - instead of a generic
 // "Something failed" that gives no lead for debugging. MonaiLabelClient's
@@ -204,5 +226,6 @@ export {
   hexToRgb,
   getLabelColor,
   hideNotification,
+  runStatusUpdater,
   describeError,
 };

@@ -61,6 +61,7 @@ Users who need to delete a study can do it in their own Orthanc page at
 ./manage.sh user-logs bob         # last 24h: their requests (errors marked), AI runs, logins, their Orthanc
 ./manage.sh user-logs bob 2h      # narrower window
 ./manage.sh logs monailabel       # follow the AI backend live (model errors show here)
+./manage.sh progress              # watch AI runs live, with progress bars (Ctrl-C stops watching)
 ```
 
 | Symptom | Where to look |
