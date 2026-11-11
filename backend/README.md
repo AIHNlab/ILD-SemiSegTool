@@ -13,8 +13,9 @@ change run `./manage.sh restart monailabel`.
 | `nnunet_airways` | `lib/configs/nnunet_airways.py` | Automatic airway segmentation (nnU-Net) |
 | `sam2_ild` | `lib/configs/sam2_ild.py` | Prompt-guided interactive ILD segmentation (MedSAM2) |
 
-Model weights live under `model/` (in Docker they are mounted there from the
-paths in `docker/.env`). The other configs in `lib/configs/` (deepedit,
+Model weights live in `model/` (`model/nnUNet_results/`, `model/sam2/checkpoint_ild.pt` -
+layout in the [main README](../README.md#model-weights)); Docker/Podman mount
+this folder into the AI container as `/app/backend/model`. The other configs in `lib/configs/` (deepedit,
 segmentation, ...) are MONAI Label's stock sample models and are not loaded
 unless listed in `MODELS`.
 

@@ -21,14 +21,14 @@ Nothing except the gateway is reachable from the network.
 
 Requirements: Podman or Docker, plus the NVIDIA driver and toolkit for a GPU
 (install steps per OS in the [main README](../README.md#installation)) and the
-model weights. An NVIDIA GPU is optional: `GPU=auto` in `.env` uses one when the
+model weights in `backend/model/` (see [Model weights](../README.md#model-weights)). An NVIDIA GPU is optional: `GPU=auto` in `.env` uses one when the
 container engine can reach it, otherwise the AI runs on the CPU.
 `./manage.sh init`/`build`/`up` print which one is in use, and
 `./manage.sh check-gpu` lists exactly what to install if the GPU isn't usable yet.
 
 ```bash
 cd docker
-./manage.sh init             # creates .env - open it and check address, ports, model paths
+./manage.sh init             # creates .env - open it and check address and ports
 ./manage.sh build            # builds the images (first time takes a while)
 ./manage.sh add-user alice --admin
 ./manage.sh up
@@ -75,12 +75,13 @@ Users who need to delete a study can do it in their own Orthanc page at
 | Study list empty / images don't load | `user-logs NAME` → gateway lines with errors; check `orthanc-NAME` is running in `status`. |
 | AI run fails or hangs | `user-logs NAME` → "MONAI Label" lines, then `logs monailabel` for the full error. A long run may just be waiting for another user's run (one run at a time), or running on CPU (minutes per run). |
 | Everything is down | `status`, then `logs gateway`. `up` restarts whatever stopped. |
-| `monailabel` keeps restarting | `logs monailabel`. Usually a wrong weight path in `.env`, or too little memory for Docker (Docker Desktop → Settings → Resources). |
+| AI runs slowly / `up` says `AI backend: CPU` on a GPU machine | `./manage.sh check-gpu` - usually the toolkit isn't connected to the engine (step 3 of [NVIDIA GPU](../README.md#nvidia-gpu-linux-and-wsl)). After fixing: `./manage.sh build && ./manage.sh up`. |
+| `monailabel` keeps restarting | `logs monailabel`. Usually missing weights in `backend/model/` (`./manage.sh check-models`), or too little memory for Docker (Docker Desktop → Settings → Resources). |
 
 ## Settings (`.env`)
 
 All settings are in `.env` (documented in `.env.example`): the address and
-HTTPS mode, ports, model weight paths, which models to load, how long a
+HTTPS mode, ports, which models to load, how long a
 login lasts, and where data is stored. Back up the `DATA_DIR` folder (or
 use `./manage.sh backup`).
 
@@ -135,7 +136,7 @@ current `.env` stays in use.
 
 ```bash
 tar -xzf /path/to/ild-backup-....tar.gz .env   # the old settings become .env
-# edit .env if the model weight paths or address differ on this machine
+# copy the model weights into ../backend/model/ (not in the backup); edit .env if the address differs
 ./manage.sh build
 ./manage.sh restore /path/to/ild-backup-....tar.gz
 ```

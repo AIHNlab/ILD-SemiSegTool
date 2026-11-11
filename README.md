@@ -38,27 +38,8 @@ curl -fsSL https://github.com/docker/compose/releases/latest/download/docker-com
   -o ~/.docker/cli-plugins/docker-compose && chmod +x ~/.docker/cli-plugins/docker-compose
 ```
 
-**3. NVIDIA GPU only** (skip without one):
-
-```bash
-# Driver (skip if `nvidia-smi` already works), then reboot
-sudo ubuntu-drivers install          # Debian: sudo apt-get install -y nvidia-driver (needs non-free)
-sudo reboot
-
-# NVIDIA Container Toolkit
-curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
-  | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
-curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
-  | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
-  | sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
-sudo apt-get update && sudo apt-get install -y nvidia-container-toolkit
-
-# Describe the GPU to Podman, kept current across reboots and driver updates
-sudo systemctl enable --now nvidia-cdi-refresh.path nvidia-cdi-refresh.service
-```
-
-Not sure what's missing? After cloning ([Set up and start](#set-up-and-start)), `./manage.sh check-gpu`
-says exactly which of these your machine still needs.
+**3. NVIDIA GPU:** follow [NVIDIA GPU](#nvidia-gpu-linux-and-wsl) below - all four
+steps, including the test. Skipping a step makes the AI quietly run on the CPU.
 
 ### Linux - RHEL / Rocky / Fedora
 
@@ -69,15 +50,57 @@ curl -fsSL https://github.com/docker/compose/releases/latest/download/docker-com
   -o ~/.docker/cli-plugins/docker-compose && chmod +x ~/.docker/cli-plugins/docker-compose
 ```
 
-NVIDIA GPU: install the driver ([NVIDIA's guide](https://docs.nvidia.com/datacenter/tesla/driver-installation-guide/);
-Fedora: `akmod-nvidia` from RPM Fusion), then:
+NVIDIA GPU: follow [NVIDIA GPU](#nvidia-gpu-linux-and-wsl) below - all four steps.
+
+### NVIDIA GPU (Linux and WSL)
+
+Skip this without an NVIDIA GPU, on macOS, and with Docker Desktop (it brings
+its own GPU support - only the Windows driver is needed). Everywhere else **all
+four steps are required** - if one is missing, nothing fails: the AI just runs
+on the CPU, 4-5x slower.
+
+**1. Driver.** Check with `nvidia-smi` - it must list your GPU.
+- Ubuntu: `sudo ubuntu-drivers install && sudo reboot` (Debian: `sudo apt-get install -y nvidia-driver`, needs `non-free`)
+- RHEL/Rocky: [NVIDIA's guide](https://docs.nvidia.com/datacenter/tesla/driver-installation-guide/); Fedora: `akmod-nvidia` from RPM Fusion
+- **WSL: never install a driver inside WSL** - install/update the [Windows driver](https://www.nvidia.com/Download/index.aspx) and restart Windows.
+
+**2. NVIDIA Container Toolkit.** Check with `nvidia-ctk --version`.
 
 ```bash
+# Ubuntu / Debian / WSL
+curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
+  | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
+  | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
+  | sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
+sudo apt-get update && sudo apt-get install -y nvidia-container-toolkit
+
+# RHEL / Rocky / Fedora
 curl -fsSL https://nvidia.github.io/libnvidia-container/stable/rpm/nvidia-container-toolkit.repo \
   | sudo tee /etc/yum.repos.d/nvidia-container-toolkit.repo
 sudo dnf install -y nvidia-container-toolkit
-sudo systemctl enable --now nvidia-cdi-refresh.path nvidia-cdi-refresh.service
 ```
+
+**3. Connect the toolkit to your container engine** - easy to miss: installing
+the toolkit alone is not enough. Which engine? `docker info` working = Docker
+(`docker/.env` uses Docker when it's running, unless `ENGINE=podman`); otherwise Podman.
+
+| Engine | Command |
+|---|---|
+| Podman on Linux | `sudo systemctl enable --now nvidia-cdi-refresh.path nvidia-cdi-refresh.service` |
+| Podman in WSL | `sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml` (re-run after Windows driver updates) |
+| Docker Engine (Linux or WSL) | `sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker` (WSL without systemd: `sudo service docker restart`) |
+| Docker Desktop | nothing |
+
+**4. Test - must print your GPU:**
+
+```bash
+podman run --rm --device nvidia.com/gpu=all docker.io/library/ubuntu:22.04 nvidia-smi -L   # Podman
+docker run --rm --gpus all ubuntu:22.04 nvidia-smi -L                                    # Docker
+```
+
+If it errors or shows no GPU, `./manage.sh check-gpu` (after cloning) says
+which step is missing.
 
 ### Windows 10/11
 
@@ -87,6 +110,10 @@ sudo systemctl enable --now nvidia-cdi-refresh.path nvidia-cdi-refresh.service
    with the **WSL 2** engine (the default).
 3. NVIDIA GPU: install the current [NVIDIA driver for Windows](https://www.nvidia.com/Download/index.aspx).
    That's all - Docker Desktop brings the rest.
+
+**Podman or Docker Engine inside WSL instead of Docker Desktop:** follow the
+Ubuntu steps inside WSL, then **all four** [NVIDIA GPU](#nvidia-gpu-linux-and-wsl)
+steps - with the Windows driver, and the WSL row in step 3.
 
 ### macOS (Intel or Apple Silicon)
 
@@ -98,9 +125,8 @@ sudo systemctl enable --now nvidia-cdi-refresh.path nvidia-cdi-refresh.service
 ### Already have Docker?
 
 On Linux, Docker Engine with the Compose plugin works too (`ENGINE=auto` in
-`docker/.env` uses Docker when it's running). For a GPU it needs the toolkit
-above plus `sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker`
-instead of the `nvidia-cdi-refresh` line.
+`docker/.env` uses Docker when it's running). For a GPU, do all four
+[NVIDIA GPU](#nvidia-gpu-linux-and-wsl) steps, with the **Docker Engine** row in step 3.
 
 ### Without admin rights
 
@@ -109,8 +135,8 @@ On a university or hospital server, ask IT to do these once (as root):
 1. Install `podman` (and `uidmap slirp4netns` on Debian/Ubuntu) - the commands in step 1 above.
 2. Give your account user-namespace ranges, if `grep $USER /etc/subuid` shows nothing:
    `sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 <you>`
-3. For a GPU: the NVIDIA driver, the NVIDIA Container Toolkit (1.18 or newer)
-   and `nvidia-cdi-refresh` enabled - step 3 above.
+3. For a GPU: [NVIDIA GPU](#nvidia-gpu-linux-and-wsl) steps 1-3 (driver, toolkit
+   1.18 or newer, the Podman row of step 3) - then you run the step 4 test yourself.
 4. `sudo loginctl enable-linger <you>` - keeps the site running after you log
    out and starts it after a reboot (`./manage.sh up` tries this itself first).
 
@@ -123,11 +149,17 @@ own user. Use ports above 1024 (the defaults, 8080/8443, are fine).
 git clone https://github.com/AIHNlab/ILD-SemiSegTool.git
 cd ILD-SemiSegTool/docker
 
-./manage.sh init                  # creates .env, checks the GPU (and what's missing) - then set the model weight paths in .env
+./manage.sh init                  # creates .env, checks the GPU and the model weights (and what's missing)
+#   GPU machine? init must print "OK: the NVIDIA GPU is ready" before you build -
+#   build makes either the GPU or the CPU version of the AI image. If it says CPU,
+#   fix the missing step it lists, then run init again.
 ./manage.sh build                 # builds the images (first time: 20-40 min)
 ./manage.sh add-user alice --admin    # asks for a password
 ./manage.sh up                    # starts everything, prints the address and opens it in your browser
 ```
+
+`up` prints `AI backend: NVIDIA GPU` or `CPU`. Fixed the GPU after building for
+the CPU? Run `./manage.sh build` again, then `up`.
 
 ### Open it
 
@@ -141,24 +173,27 @@ Accounts, monitoring, backups and troubleshooting are covered in
 
 ## Model weights
 
-Point these two settings in `docker/.env` at your copy of the weights
-(paths relative to `docker/`, or absolute):
+The weights always go in the repo's **`backend/model/`** folder (not tracked
+by git - copy them there after cloning, before `./manage.sh up`):
 
-```ini
-NNUNET_RESULTS_DIR=/path/to/model_weights/nnUNet_results
-SAM2_ILD_CHECKPOINT="/path/to/model_weights/MedSAM2+nnUnet_results/Full Finetune_b4e60/checkpoint_best_val.pt"
+```
+backend/model/
+├── nnUNet_results/
+│   ├── Dataset001_Lung/nnUNetTrainer__nnUNetPlans__3d_fullres/      nnunet_lung
+│   ├── Dataset003_ILD_raw/nnUNetTrainer__nnUNetPlans__3d_fullres/   nnunet_ild
+│   │       (each: plans.json, dataset.json, fold_0/checkpoint_final.pth)
+│   └── Dataset005_Airways/airways.pth                                nnunet_airways
+└── sam2/
+    └── checkpoint_ild.pt                                             sam2_ild
 ```
 
-`nnUNet_results` must contain:
+`checkpoint_ild.pt` is the fine-tuned MedSAM2 checkpoint (released as
+`checkpoint_best_val.pt` - rename it). Copy the real files, not links: a link
+pointing outside `backend/model/` can't be followed inside the container.
 
-| Model (`MODELS` in `.env`) | Folder |
-|---|---|
-| `nnunet_lung` | `Dataset001_Lung/nnUNetTrainer__nnUNetPlans__3d_fullres/` |
-| `nnunet_ild` | `Dataset003_ILD_raw/nnUNetTrainer__nnUNetPlans__3d_fullres/` |
-| `nnunet_airways` | `Dataset005_Airways/airways.pth` |
-| `sam2_ild` | the MedSAM2 checkpoint in `SAM2_ILD_CHECKPOINT` |
-
-To load fewer models, remove them from `MODELS` in `.env`.
+`./manage.sh check-models` lists anything missing, with its full path (`init`
+and `up` run it too; `up` won't start without the weights). To load fewer
+models, remove them from `MODELS` in `docker/.env`.
 
 ## Repository layout
 

@@ -180,22 +180,24 @@ gpu_report() {
         echo "   then: sudo reboot" ;;
       wsl | windows)
         echo "   Install the NVIDIA driver for Windows: https://www.nvidia.com/Download/index.aspx"
-        echo "   (Docker Desktop and WSL use it - nothing to install inside Linux), then restart Windows." ;;
+        echo "   (WSL uses the Windows driver - never install one inside WSL), then restart Windows." ;;
       *) echo "   https://www.nvidia.com/Download/index.aspx, then reboot" ;;
     esac
   fi
 
-  case "$os" in
-    wsl | windows)
-      step "Docker Desktop: Settings -> General -> 'Use the WSL 2 based engine' must be on."
-      echo; echo "Then run ./manage.sh check-gpu again."
-      return 2 ;;
-  esac
+  # Docker Desktop (Windows, or WSL using it) brings its own GPU support. Podman or
+  # Docker Engine installed inside WSL need the toolkit in WSL, like Linux.
+  if [ "$os" = windows ] || { [ "$os" = wsl ] && [ "$E" = docker ] \
+      && docker info --format '{{.OperatingSystem}}' 2>/dev/null | grep -q "Docker Desktop"; }; then
+    step "Docker Desktop: Settings -> General -> 'Use the WSL 2 based engine' must be on."
+    echo; echo "Then run ./manage.sh check-gpu again."
+    return 2
+  fi
 
   if ! toolkit_ok; then
     step "NVIDIA Container Toolkit (lets containers use the GPU)"
     case "$os" in
-      linux-apt) cat <<'EOF'
+      linux-apt | wsl) cat <<'EOF'
    curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
      | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
    curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
@@ -217,6 +219,10 @@ EOF
   if [ "$E" = docker ]; then
     step "Connect the toolkit to Docker"
     echo "   sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker"
+  elif [ "$os" = wsl ] && { ! toolkit_ok || ! cdi_ok; }; then
+    step "Describe the GPU for Podman (CDI) - WSL variant, detected automatically"
+    echo "   sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml"
+    echo "   # re-run it after updating the NVIDIA driver on Windows"
   elif ! toolkit_ok || ! cdi_ok; then
     step "Describe the GPU for Podman (CDI) - kept up to date across reboots and driver updates"
     echo "   sudo systemctl enable --now nvidia-cdi-refresh.path nvidia-cdi-refresh.service"
@@ -228,6 +234,7 @@ EOF
   fi
   echo
   echo "Then run ./manage.sh check-gpu again; once it says OK: ./manage.sh build && ./manage.sh up"
+  echo "(build is needed once: the AI image for the GPU differs from the CPU one.)"
   return 2
 }
 # ---- end NVIDIA GPU check ----
@@ -255,7 +262,13 @@ resolve_gpu() {
     env_set TORCH_VARIANT cpu
     echo "AI backend: CPU (no NVIDIA GPU available to $E - AI runs take minutes instead of seconds)"
     if [ "$want" != no ] && [ -z "${QUIET_GPU_HINT:-}" ] && [ "$(os_kind)" != mac ] && has_nvidia_hw; then
-      echo "  An NVIDIA GPU is in this machine - run ./manage.sh check-gpu to see what to install."
+      echo
+      echo "  !! WARNING: this machine has an NVIDIA GPU, but $E can't use it, so the AI"
+      echo "  !! will run on the CPU (4-5x slower). Usually a skipped setup step:"
+      echo "  !!   ./manage.sh check-gpu        shows which one, with the commands"
+      echo "  !!   then: ./manage.sh build && ./manage.sh up"
+      echo "  !! CPU on purpose? Set GPU=no in .env to hide this."
+      echo
     fi
   fi
   env_set COMPOSE_PATH_SEPARATOR ":"
@@ -296,6 +309,62 @@ clean_up() {
   [ "$variant" = cpu ] && other=cu130
   ctr image rm "ild-monailabel:$other" >/dev/null 2>&1 || true
   echo "Cleaned up: ${n:-0} cached scan file(s) unused for $days+ days, old images and stopped containers."
+}
+
+# Checks the model weights in backend/model/ (always there - mounted into the AI
+# container as /app/backend/model) for the models in MODELS, so a missing file is
+# reported with its real path instead of the AI backend failing on a path inside
+# its container. Suggests a fix for common mix-ups; returns 1 if anything is missing.
+MODEL_DIR=../backend/model
+check_models() {
+  local r="$MODEL_DIR/nnUNet_results" sam="$MODEL_DIR/sam2/checkpoint_ild.pt" models n=0 d f
+  models=",$(env_get MODELS),"
+  bad() { n=$((n + 1)); echo "  - $*"; }
+  nn() { # model, dataset folder
+    case "$models" in *",$1,"*) ;; *) return 0 ;; esac
+    d="$r/$2/nnUNetTrainer__nnUNetPlans__3d_fullres"
+    for f in plans.json dataset.json fold_0/checkpoint_final.pth; do
+      [ -f "$d/$f" ] || bad "$1: missing backend/model/nnUNet_results/$2/nnUNetTrainer__nnUNetPlans__3d_fullres/$f"
+    done
+  }
+  case "$models" in *,nnunet_*)
+    # A link pointing outside backend/model can't be followed inside the container.
+    if [ -L "$r" ]; then
+      bad "backend/model/nnUNet_results is a link (to $(readlink "$r")) - the container can't follow it; move the folder itself here"
+    fi
+    nn nnunet_lung Dataset001_Lung
+    nn nnunet_ild Dataset003_ILD_raw
+    case "$models" in *,nnunet_airways,*)
+      [ -f "$r/Dataset005_Airways/airways.pth" ] || bad "nnunet_airways: missing backend/model/nnUNet_results/Dataset005_Airways/airways.pth" ;;
+    esac
+    if [ "$n" -gt 0 ] && [ ! -L "$r" ]; then
+      if d=$(find "$MODEL_DIR" -mindepth 1 -maxdepth 4 -type d -name 'Dataset00[0-9]_*' 2>/dev/null | head -n 1) && [ -n "$d" ] && [ "$(dirname "$d")" != "$r" ]; then
+        echo "    -> the Dataset folders are in $(dirname "$d") - move them into backend/model/nnUNet_results/"
+      fi
+    fi ;;
+  esac
+  case "$models" in *,sam2_ild,*)
+    if [ -L "$sam" ]; then
+      bad "backend/model/sam2/checkpoint_ild.pt is a link (to $(readlink "$sam")) - put the file itself there"
+    elif [ ! -f "$sam" ]; then
+      bad "sam2_ild: missing backend/model/sam2/checkpoint_ild.pt (the MedSAM2 checkpoint, renamed to this)"
+      if d=$(ls "$MODEL_DIR"/sam2/*.pt 2>/dev/null | head -n 1) && [ -n "$d" ]; then
+        echo "    -> found $d - rename it: mv \"$d\" $sam"
+      fi
+    fi ;;
+  esac
+  [ "$n" -eq 0 ] && { echo "Model weights: OK ($(env_get MODELS))"; return 0; }
+  cat <<'EOF'
+  Expected in the repo's backend/model/ folder:
+    nnUNet_results/
+      Dataset001_Lung/nnUNetTrainer__nnUNetPlans__3d_fullres/     (nnunet_lung)
+      Dataset003_ILD_raw/nnUNetTrainer__nnUNetPlans__3d_fullres/  (nnunet_ild)
+          plans.json  dataset.json  fold_0/checkpoint_final.pth
+      Dataset005_Airways/airways.pth                               (nnunet_airways)
+    sam2/checkpoint_ild.pt                                         (sam2_ild)
+  Copy the weights there, or remove models you don't have from MODELS= in .env.
+EOF
+  return 1
 }
 
 # The address users open, from SITE_ADDRESS/ports in .env. With plain HTTP the
@@ -379,14 +448,18 @@ shift || true
 case "$cmd" in help | -h | --help) ;; *) init_engine ;; esac
 case "$cmd" in
   init)
-    [ -f .env ] || { cp .env.example .env; echo "Created .env - review it (address, ports, model paths)."; }
+    [ -f .env ] || { cp .env.example .env; echo "Created .env - review it (address, ports, models)."; }
     [ -f "$USERS_FILE" ] || echo "services: {}" > "$USERS_FILE"
     QUIET_GPU_HINT=1 resolve_gpu
     echo; gpu_report || true; echo
+    check_models || echo "(Put the model weights in backend/model/ before ./manage.sh up.)"; echo
     echo "Next: ./manage.sh build, then ./manage.sh add-user <name> --admin, then ./manage.sh up"
     ;;
   clean)
     need_env; clean_up
+    ;;
+  check-models)
+    need_env; check_models || exit 1
     ;;
   check-gpu)
     gpu_report || true
@@ -395,7 +468,8 @@ case "$cmd" in
     need_env; resolve_gpu; compose build "$@"
     ;;
   up | start)
-    need_env; resolve_gpu; generate_users; compose up -d --remove-orphans
+    need_env; echo "Checking model weights..."; check_models || die "model weights missing - see above (nothing was started)"
+    resolve_gpu; generate_users; compose up -d --remove-orphans
     podman_boot
     clean_up
     compose ps
@@ -531,6 +605,7 @@ Users
 
 Monitoring
   status                    containers + GPU (or CPU) use at a glance
+  check-models              are the model weights in backend/model/ complete?
   check-gpu                 is the NVIDIA GPU usable? if not, what to install
   logs [SERVICE]            follow logs (gateway, login, monailabel, orthanc-NAME)
   progress                  watch AI runs live, with progress bars

@@ -73,13 +73,10 @@ services:
       - ../backend/lib:/app/backend/lib:ro
       - ../backend/bin:/app/backend/bin:ro
       - ../preprocessing:/app/preprocessing:ro
-      - type: bind
-        source: ${NNUNET_RESULTS_DIR}
-        target: /app/backend/model/nnUNet_results
-      - type: bind
-        source: ${SAM2_ILD_CHECKPOINT}
-        target: /app/backend/model/sam2/checkpoint_ild.pt
-        read_only: true
+      # Model weights, always from the repo's backend/model/ (see README "Model
+      # weights"): nnUNet_results/ and sam2/checkpoint_ild.pt. Writable: the
+      # airways model unpacks its checkpoint into a model folder on first start.
+      - ../backend/model:/app/backend/model
       - ${DATA_DIR:-./data}/monailabel:/data
       - ${DATA_DIR:-./data}/monailabel/logs:/app/backend/logs
     # nnU-Net hands the CT volume between its worker processes through shared
