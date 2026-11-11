@@ -1,6 +1,6 @@
 # ILD SemiSeg Tool - server deployment
 
-Runs the whole tool on one server PC with Docker. Users open one web
+Runs the whole tool on one server PC with Docker or Podman (rootless works). Users open one web
 address, log in, and land in the OHIF viewer with their own study list.
 They add studies with **Upload** on the study list, and log out from the
 settings (gear) menu, which shows who is logged in.
@@ -19,10 +19,12 @@ Nothing except the gateway is reachable from the network.
 
 ## First-time setup
 
-Requirements: Docker (see the [main README](../README.md#quick-start-docker)
-for Windows/macOS/Linux) and the model weights. An NVIDIA GPU is optional:
-`GPU=auto` in `.env` uses one when Docker can reach it, otherwise the AI runs
-on the CPU. `./manage.sh init`/`build`/`up` print which one is in use.
+Requirements: Podman or Docker, plus the NVIDIA driver and toolkit for a GPU
+(install steps per OS in the [main README](../README.md#installation)) and the
+model weights. An NVIDIA GPU is optional: `GPU=auto` in `.env` uses one when the
+container engine can reach it, otherwise the AI runs on the CPU.
+`./manage.sh init`/`build`/`up` print which one is in use, and
+`./manage.sh check-gpu` lists exactly what to install if the GPU isn't usable yet.
 
 ```bash
 cd docker
@@ -43,6 +45,8 @@ Use Chrome, Edge or Safari - Firefox renders the images grey.
 ./manage.sh remove-user bob       # remove the login; studies stay on disk
 ./manage.sh list-users
 ./manage.sh status                # all containers + GPU use
+./manage.sh check-gpu             # GPU usable? if not, the commands to install what's missing
+./manage.sh clean                 # remove stale scan caches and old images (up does this too)
 ./manage.sh backup                # archive accounts, studies, saves and .env into backups/
 ./manage.sh restore backups/ild-backup-YYYYMMDD-HHMM.tar.gz   # roll back to a backup
 ./manage.sh up                    # apply .env changes / restart after an update
@@ -79,6 +83,36 @@ All settings are in `.env` (documented in `.env.example`): the address and
 HTTPS mode, ports, model weight paths, which models to load, how long a
 login lasts, and where data is stored. Back up the `DATA_DIR` folder (or
 use `./manage.sh backup`).
+
+## Docker or Podman
+
+`ENGINE=auto` (in `.env`) uses Docker if it is running, otherwise Podman;
+set `docker` or `podman` to force one. Everything in `manage.sh` works the same
+on both. Podman differences, handled by `manage.sh`:
+
+- GPU: `docker-compose.podman-gpu.yml` (CDI device `nvidia.com/gpu=all`)
+  instead of `docker-compose.gpu.yml`.
+- Start at boot: `up` enables the user services `podman.socket` and
+  `podman-restart.service`, and lingering (or tells you to ask the admin).
+- Rootless: files in `data/` belong to your own user - no root needed to
+  copy or delete them.
+- Ubuntu: AppArmor won't let Podman stop its default network helper (pasta),
+  so `manage.sh` switches your user's Podman to `slirp4netns` once (written to
+  `~/.config/containers/containers.conf`).
+
+## Disk space
+
+`./manage.sh up` (or `clean`) removes what's safe to lose: AI image caches - a
+converted copy of every scan anyone opened, ~0.5 GB each - not used for
+`CACHE_DAYS` days (default 14; re-downloaded from the user's Orthanc in 10-20 s
+when opened again), untagged images left by rebuilds, stopped containers, and
+the CPU/GPU variant of the AI image not in use. Container logs are capped at
+50 MB each. Accounts, studies and saved segmentations are never touched.
+
+Moving an existing Docker install to Podman: `./manage.sh down`, then
+`docker save ild-monailabel:cu130 ild-gateway ild-login | podman load` (or
+`./manage.sh build`), hand `data/` to your user if Docker wrote it as root,
+set `ENGINE=podman`, `./manage.sh up`.
 
 ## Backup and restore
 

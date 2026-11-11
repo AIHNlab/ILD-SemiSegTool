@@ -1,0 +1,7 @@
+# Podman's version of docker-compose.gpu.yml (manage.sh picks it when ENGINE
+# resolves to podman): Podman names the GPU through CDI instead of `gpus: all`.
+# Needs the NVIDIA Container Toolkit's CDI spec (nvidia-ctk cdi generate).
+services:
+  monailabel:
+    devices:
+      - nvidia.com/gpu=all

@@ -2,7 +2,7 @@
 # Everything the AI backend needs, baked into one image. The app code itself
 # (backend/) and the model weights are mounted at run time - see
 # docker-compose.yml - so code changes only need a container restart.
-FROM ubuntu:22.04
+FROM docker.io/library/ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 PIP_NO_CACHE_DIR=1
 RUN apt-get update \

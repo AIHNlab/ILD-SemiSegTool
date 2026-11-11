@@ -195,13 +195,26 @@ def create_app():
 # --- CLI -------------------------------------------------------------------
 
 
+MIN_PASSWORD_LENGTH = 8
+
+
 def _ask_password():
-    password = os.environ.get("NEW_PASSWORD") or getpass.getpass("Password: ")
-    if not os.environ.get("NEW_PASSWORD") and password != getpass.getpass("Repeat password: "):
-        sys.exit("Passwords don't match.")
-    if len(password) < 8:
-        sys.exit("Password must be at least 8 characters.")
-    return password
+    scripted = os.environ.get("NEW_PASSWORD")
+    if scripted:
+        if len(scripted) < MIN_PASSWORD_LENGTH:
+            sys.exit(f"Password must be at least {MIN_PASSWORD_LENGTH} characters.")
+        return scripted
+    # Typed at a terminal: explain a mistake and ask again instead of quitting.
+    for _ in range(3):
+        password = getpass.getpass(f"Password (at least {MIN_PASSWORD_LENGTH} characters): ")
+        if len(password) < MIN_PASSWORD_LENGTH:
+            print(f"Too short - at least {MIN_PASSWORD_LENGTH} characters. Try again.")
+            continue
+        if password != getpass.getpass("Repeat password: "):
+            print("The two passwords don't match. Try again.")
+            continue
+        return password
+    sys.exit("No password set - nothing changed.")
 
 
 def cli(argv):

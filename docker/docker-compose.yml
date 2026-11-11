@@ -3,6 +3,11 @@
 # generated into users.generated.yml by `./manage.sh add-user`.
 name: ild-semiseg
 
+# Cap each container's log (Podman otherwise keeps it forever); manage.sh
+# user-logs reads from these, so they hold the recent history only.
+x-logging: &logging
+  options: { max-size: "50m" }
+
 services:
   # Single entry point: HTTPS, login check, the OHIF viewer, and routing
   # to each user's own Orthanc and to MONAI Label.
@@ -11,7 +16,8 @@ services:
       context: ..
       dockerfile: docker/gateway/Dockerfile
     image: ild-gateway:latest
-    restart: unless-stopped
+    restart: always
+    logging: *logging
     ports:
       - "${HTTP_PORT:-8080}:80"
       - "${HTTPS_PORT:-8443}:443"
@@ -27,7 +33,8 @@ services:
   login:
     build: ./login
     image: ild-login:latest
-    restart: unless-stopped
+    restart: always
+    logging: *logging
     environment:
       SESSION_HOURS: ${SESSION_HOURS:-12}
     volumes:
@@ -44,7 +51,8 @@ services:
         # cu130 (NVIDIA GPU) or cpu - set by manage.sh from GPU= in .env.
         TORCH_VARIANT: ${TORCH_VARIANT:-cpu}
     image: ild-monailabel:${TORCH_VARIANT:-cpu}
-    restart: unless-stopped
+    restart: always
+    logging: *logging
     command: >
       python -m monailabel.main start_server
       --app /app/backend
