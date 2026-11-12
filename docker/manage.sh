@@ -31,8 +31,10 @@ init_engine() {
     *)
       if docker info >/dev/null 2>&1; then E=docker
       elif command -v podman >/dev/null 2>&1; then E=podman
+      elif has_docker; then docker_problem; exit 1
       else die "neither Docker nor Podman is available - install one (see README)"; fi ;;
   esac
+  if [ "$E" = docker ] && ! docker info >/dev/null 2>&1; then docker_problem; exit 1; fi
   if [ "$E" = podman ]; then
     # `podman compose` runs docker-compose against Podman's API socket. Use the
     # docker-compose program explicitly (podman-compose lacks flags used here).
@@ -79,6 +81,48 @@ podman_network_fix() {
     "[network]" 'default_rootless_network_cmd = "slirp4netns"' >> "$conf"
   systemctl --user restart podman.service >/dev/null 2>&1 || true
   echo "Podman: switched rootless networking to slirp4netns (in $conf)."
+}
+# Real Docker installed? (podman-docker installs a `docker` that is really Podman.)
+has_docker() { command -v docker >/dev/null 2>&1 && ! docker --version 2>/dev/null | grep -qi podman; }
+# Docker is installed but this user can't use it: say why and how to fix it.
+docker_problem() {
+  local err; err=$(docker info 2>&1 >/dev/null | head -3) || true
+  echo "Docker is installed but can't be used by $(id -un) yet:" >&2
+  echo "  ${err:-docker info failed}" >&2
+  if echo "$err" | grep -qi 'permission denied'; then
+    if getent group docker | grep -qw "$(id -un)"; then
+      echo "You are in the docker group, but this login started before you were added." >&2
+      echo "Log out and back in (or reboot). Quick fix for this terminal only: newgrp docker" >&2
+    else
+      echo "Add yourself to the docker group, then log out and back in:" >&2
+      echo "  sudo usermod -aG docker \$USER" >&2
+    fi
+  elif echo "$err" | grep -qiE 'cannot connect|daemon running|no such file'; then
+    echo "The Docker service isn't running. Start it (and at every boot):" >&2
+    echo "  sudo systemctl enable --now docker" >&2
+  fi
+  echo "Then run ./manage.sh init again. (Or set ENGINE=podman in .env to use Podman instead.)" >&2
+}
+# Lets the admin pick Docker or Podman when both are installed (run by init);
+# saved as ENGINE= in .env. With only one installed, that one is saved.
+choose_engine() {
+  local has_d="" has_p="" ans
+  if [ "$(env_get ENGINE auto)" = auto ]; then
+    has_docker && has_d=1
+    command -v podman >/dev/null 2>&1 && has_p=1
+    if [ -n "$has_d" ] && [ -n "$has_p" ] && [ -t 0 ]; then
+      echo "Both Docker and Podman are installed. Which one should run the tool?"
+      echo "  1) docker  - runs as root (needs admin rights or the docker group)"
+      echo "  2) podman  - rootless: runs as your own user"
+      printf "Choose 1 or 2 [1]: "; read -r ans
+      case "$ans" in 2 | podman) env_set ENGINE podman ;; *) env_set ENGINE docker ;; esac
+    elif [ -n "$has_d" ] && { [ -z "$has_p" ] || docker info >/dev/null 2>&1; }; then env_set ENGINE docker
+    elif [ -n "$has_p" ]; then env_set ENGINE podman
+    else die "neither Docker nor Podman is installed - see Installation in the README"
+    fi
+    echo "Container engine: $(env_get ENGINE) (ENGINE= in .env - change it there any time)"
+  fi
+  init_engine
 }
 ctr() { "$E" "$@"; }
 # Under Podman, docker-compose is run directly against Podman's socket (what
@@ -445,11 +489,12 @@ EOF
 
 cmd=${1:-help}
 shift || true
-case "$cmd" in help | -h | --help) ;; *) init_engine ;; esac
+case "$cmd" in help | -h | --help | init) ;; *) init_engine ;; esac  # init picks the engine first
 case "$cmd" in
   init)
     [ -f .env ] || { cp .env.example .env; echo "Created .env - review it (address, ports, models)."; }
     [ -f "$USERS_FILE" ] || echo "services: {}" > "$USERS_FILE"
+    choose_engine
     QUIET_GPU_HINT=1 resolve_gpu
     echo; gpu_report || true; echo
     check_models || echo "(Put the model weights in backend/model/ before ./manage.sh up.)"; echo
@@ -521,7 +566,12 @@ case "$cmd" in
     need_env; u=${1:?usage: add-user NAME [--admin]}
     login_cli add-user "$@"
     generate_users
-    mkdir -p "$(data_dir)/orthanc/$u"
+    # The study folder: under Docker, data/orthanc/ is root-owned (written by the
+    # containers or by restore), so create it from a container when we can't.
+    d=$(data_dir)
+    mkdir -p "$d/orthanc/$u" 2>/dev/null \
+      || MSYS_NO_PATHCONV=1 ctr run --rm -v "$(abs_path "$d/orthanc"):/o" $ALPINE mkdir -p "/o/$u" \
+      || die "could not create $d/orthanc/$u"
     compose up -d "orthanc-$u"
     echo "User '$u' can now log in."
     ;;

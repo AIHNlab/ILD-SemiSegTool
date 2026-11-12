@@ -87,9 +87,11 @@ use `./manage.sh backup`).
 
 ## Docker or Podman
 
-`ENGINE=auto` (in `.env`) uses Docker if it is running, otherwise Podman;
-set `docker` or `podman` to force one. Everything in `manage.sh` works the same
-on both. Podman differences, handled by `manage.sh`:
+Both are supported - the admin picks one. `./manage.sh init` asks if both are
+installed and saves the choice as `ENGINE=docker` or `ENGINE=podman` in `.env`
+(`auto` = Docker if it's running, else Podman). Everything in `manage.sh` works
+the same on both; see the main README's "Docker or Podman?" table for which to
+pick. Podman differences, handled by `manage.sh`:
 
 - GPU: `docker-compose.podman-gpu.yml` (CDI device `nvidia.com/gpu=all`)
   instead of `docker-compose.gpu.yml`.
@@ -100,6 +102,22 @@ on both. Podman differences, handled by `manage.sh`:
 - Ubuntu: AppArmor won't let Podman stop its default network helper (pasta),
   so `manage.sh` switches your user's Podman to `slirp4netns` once (written to
   `~/.config/containers/containers.conf`).
+
+**Switching engine later** (either direction) - images and data don't move by
+themselves, but a backup carries the data and fixes file ownership on restore:
+
+```bash
+./manage.sh backup                 # with the old engine
+./manage.sh down
+# set ENGINE=docker or ENGINE=podman in .env
+./manage.sh build                  # images for the new engine (20-40 min)
+./manage.sh restore backups/ild-backup-<newest>.tar.gz
+```
+
+Each engine keeps its own images; afterwards free ~12 GB by removing this
+tool's images from the old engine (`docker` or `podman`, whichever you left):
+`<old-engine> rmi ild-monailabel:cu130 ild-monailabel:cpu ild-gateway:latest ild-login:latest`
+(errors for tags that don't exist are harmless).
 
 ## Disk space
 

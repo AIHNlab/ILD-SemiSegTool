@@ -12,27 +12,50 @@ Segmentation of Interstitial Lung Disease in Thoracic CT"* (TIA 2026 @ MICCAI
 
 ## Installation
 
-Runs on **Linux, Windows or macOS** in containers, with **Podman** (works
-without admin rights, recommended on Linux servers) or **Docker**. An NVIDIA
+Runs on **Linux, Windows or macOS** in containers, with **Docker or Podman -
+your choice** (both work the same; `./manage.sh` handles either). An NVIDIA
 GPU is used automatically when available. Without one, everything still works
 on the CPU, just slower: a lung segmentation takes about 3–4 minutes instead
 of 1, and a MedSAM2 box about 45 s instead of 10 s.
 
 You need: **Git**, a **container engine** with the **docker-compose** program,
 for a GPU the **NVIDIA driver** and **NVIDIA Container Toolkit**, and the
-**model weights** (see [Model weights](#model-weights)). Pick your system:
+**model weights** (see [Model weights](#model-weights)).
+
+**Docker or Podman?**
+
+| | Docker | Podman |
+|---|---|---|
+| Admin rights | needed to install, and to run (or membership of the `docker` group) | needed once to install; then runs **rootless** as your own user |
+| Good for | your own PC or a server you administer; Windows and macOS (Docker Desktop) | university/hospital servers without admin rights |
+| Files it writes in `docker/data/` | owned by root | owned by you |
+
+If both are installed, `./manage.sh init` asks which one to use and saves it as
+`ENGINE=` in `docker/.env` (change it there any time). Pick your system:
 
 ### Linux - Ubuntu / Debian
 
-Commands with `sudo` need admin rights once; no admin rights? Send them to your
-IT (see [Without admin rights](#without-admin-rights)).
+Commands with `sudo` need admin rights once; no admin rights? Use Podman and
+send the `sudo` lines to your IT (see [Without admin rights](#without-admin-rights)).
+
+**1. Git**
 
 ```bash
-# 1. Git + Podman
-sudo apt-get update
-sudo apt-get install -y git curl podman uidmap slirp4netns
+sudo apt-get update && sudo apt-get install -y git curl
+```
 
-# 2. docker-compose for your user (podman runs it; no admin rights needed)
+**2. Container engine - option A: Docker** (includes docker-compose)
+
+```bash
+curl -fsSL https://get.docker.com | sudo sh        # Docker's official installer
+sudo usermod -aG docker $USER                      # run docker without sudo - log out and back in after this
+```
+
+**2. Container engine - option B: Podman** (rootless)
+
+```bash
+sudo apt-get install -y podman uidmap slirp4netns
+# docker-compose for your user - podman runs it (no admin rights needed)
 mkdir -p ~/.docker/cli-plugins
 curl -fsSL https://github.com/docker/compose/releases/latest/download/docker-compose-linux-$(uname -m) \
   -o ~/.docker/cli-plugins/docker-compose && chmod +x ~/.docker/cli-plugins/docker-compose
@@ -44,7 +67,14 @@ steps, including the test. Skipping a step makes the AI quietly run on the CPU.
 ### Linux - RHEL / Rocky / Fedora
 
 ```bash
-sudo dnf install -y git curl podman
+sudo dnf install -y git curl
+
+# option A: Docker (includes docker-compose)
+curl -fsSL https://get.docker.com | sudo sh
+sudo systemctl enable --now docker && sudo usermod -aG docker $USER   # then log out and back in
+
+# option B: Podman (rootless)
+sudo dnf install -y podman
 mkdir -p ~/.docker/cli-plugins
 curl -fsSL https://github.com/docker/compose/releases/latest/download/docker-compose-linux-$(uname -m) \
   -o ~/.docker/cli-plugins/docker-compose && chmod +x ~/.docker/cli-plugins/docker-compose
@@ -122,15 +152,10 @@ steps - with the Windows driver, and the WSL row in step 3.
    in Settings → Resources give it at least **8 GB memory** (an AI run peaks at about 4.5 GB).
 3. Macs have no NVIDIA GPU support - the AI runs on the CPU.
 
-### Already have Docker?
-
-On Linux, Docker Engine with the Compose plugin works too (`ENGINE=auto` in
-`docker/.env` uses Docker when it's running). For a GPU, do all four
-[NVIDIA GPU](#nvidia-gpu-linux-and-wsl) steps, with the **Docker Engine** row in step 3.
-
 ### Without admin rights
 
-On a university or hospital server, ask IT to do these once (as root):
+Use **Podman** (Docker needs admin rights to run). On a university or hospital
+server, ask IT to do these once (as root):
 
 1. Install `podman` (and `uidmap slirp4netns` on Debian/Ubuntu) - the commands in step 1 above.
 2. Give your account user-namespace ranges, if `grep $USER /etc/subuid` shows nothing:
