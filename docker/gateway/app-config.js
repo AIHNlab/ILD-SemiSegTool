@@ -28,6 +28,9 @@ window.config = {
   defaultDataSourceName: 'dicomweb',
   useSharedArrayBuffer: 'TRUE',
   monaiLabelServerUrl: '/monai/',
+  // The logged-in user's own Orthanc REST API (the gateway routes it to them).
+  // Enables the Delete button on each study in the study list.
+  orthancRoot: '/orthanc',
   dataSources: [
     {
       namespace: '@ohif/extension-default.dataSourcesModule.dicomweb',
@@ -42,6 +45,12 @@ window.config = {
         supportsReject: true,
         imageRendering: 'wadors',
         thumbnailRendering: 'wadors',
+        // Ask Orthanc for plain uncompressed pixels (it converts on the server,
+        // ~10 ms per slice) instead of whatever the study was stored as - e.g.
+        // JPEG 2000, which the browser would have to decode slice by slice in
+        // WebAssembly: seconds of CPU per scan, very slow on tablets and phones.
+        // The gateway gzips the result on the wire (see Caddyfile).
+        requestTransferSyntaxUID: '1.2.840.10008.1.2.1',
         enableStudyLazyLoad: true,
         supportsFuzzyMatching: true,
         supportsWildcard: true,

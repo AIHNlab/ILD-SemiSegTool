@@ -13,7 +13,21 @@
 			time_format iso8601
 		}
 	}
-	encode zstd gzip
+	# Default types (text, JSON, JS, ...) plus DICOMweb: series metadata
+	# (application/dicom+json, several MB per series) and image frames
+	# (multipart/related - uncompressed pixels, see requestTransferSyntaxUID
+	# in app-config.js), which the browser then unpacks natively.
+	encode zstd gzip {
+		match {
+			header Content-Type text/*
+			header Content-Type application/json*
+			header Content-Type application/javascript*
+			header Content-Type application/wasm*
+			header Content-Type image/svg+xml*
+			header Content-Type application/dicom+json*
+			header Content-Type multipart/related*
+		}
+	}
 
 	@login path /login /logout
 	handle @login {
@@ -51,6 +65,15 @@
 			}
 
 			handle_path /monai/* {
+				# AI results and saves are binary (application/octet-stream),
+				# which the site-wide encode above skips. Compressing them
+				# here shrinks a run-length labelmap ~5-10x on the wire, and
+				# the browser undoes it natively - nothing for its JavaScript.
+				encode zstd gzip {
+					match {
+						header Content-Type application/octet-stream*
+					}
+				}
 				reverse_proxy monailabel:8000 {
 					transport http {
 						# Inference can wait in the GPU queue behind other users' runs.
@@ -64,6 +87,15 @@
 				# Lets the viewer use SharedArrayBuffer for faster volume loading.
 				header Cross-Origin-Opener-Policy same-origin
 				header Cross-Origin-Embedder-Policy require-corp
+				# Files with a content hash in their name (app.bundle.<hash>.js,
+				# ...) never change: cache them for good. Everything else -
+				# index.html, app-config.js, ... - must be re-checked on every
+				# load, so a new deployment shows up on a normal reload instead
+				# of Safari keeping an old copy.
+				@hashed path_regexp \.[0-9a-f]{16,}\.
+				@unhashed not path_regexp \.[0-9a-f]{16,}\.
+				header @hashed Cache-Control "public, max-age=31536000, immutable"
+				header @unhashed Cache-Control "no-cache"
 				try_files {path} /index.html
 				file_server
 			}

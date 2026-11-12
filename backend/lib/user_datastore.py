@@ -7,9 +7,9 @@ Orthanc on demand, left out of backups), so after a restore or a cache
 clear-out every save would vanish from the Load list and Regional Stats.
 
 Saves are therefore looked up from the files themselves:
-labels/<tag>/<image id>.<ext>, with their info read from the NRRD header the
-viewer writes (format/model/classes/saved_at - see MonaiLabelPanel
-buildSegmentationFile), merged with whatever the index still knows.
+labels/<tag>/<image id>.<ext>, with their info read from the NRRD header
+(format/model/classes/saved_at - written by lib/label_upload.py from the
+viewer's upload), merged with whatever the index still knows.
 """
 
 import glob
@@ -19,6 +19,8 @@ import os
 from typing import Any, Dict
 
 from monailabel.datastore.dicom import DICOMWebDatastore
+
+from lib.label_upload import RLE_EXT, rle_to_nrrd
 
 logger = logging.getLogger(__name__)
 
@@ -96,3 +98,14 @@ class UserDatastore(DICOMWebDatastore):
         # is on (always, for DICOMweb), leaving it to a file watcher that ignores
         # .nrrd saves - re-sync explicitly so the delete shows straight away.
         self.refresh()
+
+    def save_label(self, image_id, label_filename, label_tag, label_info, label_id=""):
+        # The viewer uploads a light run-length form (lib/label_upload.py); the
+        # stored file is the gzip NRRD every reader expects.
+        if not label_filename.endswith(RLE_EXT):
+            return super().save_label(image_id, label_filename, label_tag, label_info, label_id)
+        nrrd_file, index_info = rle_to_nrrd(label_filename, label_info or {})
+        try:
+            return super().save_label(image_id, nrrd_file, label_tag, index_info, label_id)
+        finally:
+            os.remove(nrrd_file)

@@ -55,6 +55,10 @@ function DicomUploadProgress({
 
   const [numFails, setNumFails] = useState(0);
 
+  // Files that turned out not to be DICOM (checked in the browser before
+  // uploading) - skipped, not an upload error.
+  const [numSkipped, setNumSkipped] = useState(0);
+
   const [showFailedOnly, setShowFailedOnly] = useState(false);
 
   const progressBarContainerRef = useRef<HTMLElement>();
@@ -184,7 +188,11 @@ function DicomUploadProgress({
         .load()
         .catch((rejection: UploadRejection) => {
           if (rejection.status === UploadStatus.Failed) {
-            setNumFails(numFails => numFails + 1);
+            if (rejection.message === 'Not a valid DICOM file.') {
+              setNumSkipped(n => n + 1);
+            } else {
+              setNumFails(numFails => numFails + 1);
+            }
           }
         })
         .finally(() => {
@@ -333,6 +341,11 @@ function DicomUploadProgress({
                 {numFails > 0
                   ? `Completed with ${numFails} ${numFails > 1 ? 'errors' : 'error'}!`
                   : 'Completed!'}
+                {numSkipped > 0 && (
+                  <span className="ml-2 text-base text-white">
+                    ({numSkipped} {numSkipped > 1 ? 'files' : 'file'} that {numSkipped > 1 ? "weren't" : "wasn't"} DICOM skipped)
+                  </span>
+                )}
               </div>
               {getShowFailedOnlyIconComponent()}
             </>

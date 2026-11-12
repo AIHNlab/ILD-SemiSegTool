@@ -11,7 +11,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-import React, { forwardRef, useEffect, useImperativeHandle, useState } from 'react';
+import React, { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { Icon } from '@ohif/ui';
 import ModelSelector from '../ModelSelector';
 import * as cornerstoneTools from '@cornerstonejs/tools';
@@ -19,6 +19,7 @@ import { getEnabledElements } from '@cornerstonejs/core';
 import { useActionTab, ActionTabProps } from './useActionTab';
 import { hideNotification, describeError, runStatusUpdater } from '../../utils/GenericUtils';
 import { renderAllViewports } from '../../utils/AnnotationHistory';
+import { copyLabelmap, sliceArrays, trackModifiedSlices } from '../../utils/labelmapAccess';
 
 const SHAPE_TOOLS = {
   point: 'ProbeMONAILabel',
@@ -248,6 +249,10 @@ const SemiSegmentation = forwardRef<any, ActionTabProps>((props, ref) => {
   // Baseline for the brush tool's before/after diff (see snapshotBrush and
   // buildBrushParamsList) - null means no brush edits are pending.
   const [brushSnapshot, setBrushSnapshot] = useState<any>(null);
+  // Which slices changed since the snapshot (brush strokes report theirs),
+  // so the diff at Run time only looks at those, not the whole volume.
+  const brushTracker = useRef<ReturnType<typeof trackModifiedSlices> | null>(null);
+  useEffect(() => () => brushTracker.current?.stop(), []);
   // Radius (mm) CircularBrush/CircularEraser paint/erase with - see
   // onBrushSizeChange/applyBrushSize.
   const [brushSize, setBrushSize] = useState(DEFAULT_BRUSH_SIZE);
@@ -298,29 +303,19 @@ const SemiSegmentation = forwardRef<any, ActionTabProps>((props, ref) => {
     return cornerstoneViewportService.getCornerstoneViewport(viewport.viewportId).element;
   };
 
-  // Whole volume's worth of "is this voxel currently segIndex" - used both
-  // to snapshot the brush baseline and, at Run time, to read back the
-  // current state for diffing against it. Deliberately not scoped to "the
-  // current slice": the user can pick the brush tool/class on one slice and
-  // then scroll before actually painting, so pinning a slice index up front
-  // at snapshot time can end up diffing a slice nothing ever touched.
-  // Scanning the whole volume finds whichever slice(s) actually changed
-  // instead.
-  const readClassVolumeMask = (segIndex: number) => {
+  // Baseline for the brush diff: a copy of the labelmap (slice-wise memory
+  // copies, cheap) plus a tracker of which slices change from now on. Not
+  // pinned to "the current slice": the user can pick the brush on one slice
+  // and then scroll before painting - the tracker records whichever slice(s)
+  // actually changed.
+  const takeBrushBaseline = () => {
     const { segmentationService } = servicesManager.services;
-    const volumeLoadObject = segmentationService.getLabelmapVolume('1');
-    const [width] = volumeLoadObject?.dimensions || [];
-    const scalarData = volumeLoadObject?.voxelManager?.getCompleteScalarDataArray();
-    if (!scalarData || !width) {
-      return null;
-    }
-    const numImageFrames = getActiveViewportInfo().displaySet.numImageFrames;
-    const sliceLength = scalarData.length / numImageFrames;
-    const mask = new Uint8Array(scalarData.length);
-    for (let i = 0; i < scalarData.length; i++) {
-      mask[i] = scalarData[i] === segIndex ? 1 : 0;
-    }
-    return { mask, width, sliceLength };
+    const volumeLoadObject = (segmentationService.getSegmentation('1') ? segmentationService.getLabelmapVolume('1') : null);
+    const [width, height] = volumeLoadObject?.dimensions || [];
+    const data = volumeLoadObject ? copyLabelmap(volumeLoadObject) : null;
+    brushTracker.current?.stop();
+    brushTracker.current = data && width ? trackModifiedSlices() : null;
+    return data && width ? { before: data, width, sliceLength: width * height } : null;
   };
 
   // CircularBrush/CircularEraser otherwise touch whatever class's voxels
@@ -365,7 +360,9 @@ const SemiSegmentation = forwardRef<any, ActionTabProps>((props, ref) => {
   // the class changes - a baseline left over from an earlier brush session
   // keeps that OLD class active and every other class (including the one
   // now ticked) locked, so painting/erasing the ticked class does nothing.
-  const armBrush = (label: string | null) => {
+  const armBrush = async (label: string | null) => {
+    // The brush paints into the segmentation layer, created on first use.
+    await props.ensureSegmentation?.();
     const segIndex = label && segmentInfo()[label]?.segmentIndex;
     if (brushSnapshot && segIndex != null && brushSnapshot.segIndex === segIndex) {
       activateBrushSegment(segIndex);
@@ -387,11 +384,13 @@ const SemiSegmentation = forwardRef<any, ActionTabProps>((props, ref) => {
   const snapshotBrush = (label: string | null) => {
     const segIndex = label && segmentInfo()[label]?.segmentIndex;
     if (segIndex == null) {
+      brushTracker.current?.stop();
+      brushTracker.current = null;
       setBrushSnapshot(null);
       return;
     }
     activateBrushSegment(segIndex);
-    const snapshot = readClassVolumeMask(segIndex);
+    const snapshot = takeBrushBaseline();
     setBrushSnapshot(snapshot ? { segIndex, ...snapshot } : null);
   };
 
@@ -505,26 +504,43 @@ const SemiSegmentation = forwardRef<any, ActionTabProps>((props, ref) => {
     if (!brushSnapshot) {
       return [];
     }
-    const { segIndex, mask: before, width, sliceLength } = brushSnapshot;
-    const after = readClassVolumeMask(segIndex);
-    if (!after || after.width !== width || after.sliceLength !== sliceLength) {
+    const { segIndex, before, width, sliceLength } = brushSnapshot;
+    const { segmentationService } = servicesManager.services;
+    const volumeLoadObject = (segmentationService.getSegmentation('1') ? segmentationService.getLabelmapVolume('1') : null);
+    const [w, h, depth] = volumeLoadObject?.dimensions || [];
+    if (!volumeLoadObject || w !== width || w * h !== sliceLength || before.length !== sliceLength * depth) {
+      return [];
+    }
+    // Only the slices that changed since the snapshot (all, if some change
+    // didn't say which), read live - no whole-volume copy.
+    const tracker = brushTracker.current;
+    const slices =
+      !tracker || tracker.all
+        ? Array.from({ length: depth }, (_, z) => z)
+        : Array.from(tracker.slices).sort((a, b) => a - b);
+    const arrays = sliceArrays(volumeLoadObject);
+    const full = arrays ? null : volumeLoadObject.voxelManager?.getCompleteScalarDataArray();
+    if (!arrays && !full) {
       return [];
     }
 
     const addedBySlice = new Map();
     const removedBySlice = new Map();
-    for (let i = 0; i < after.mask.length; i++) {
-      if (after.mask[i] === before[i]) {
-        continue;
+    for (const sliceIndex of slices) {
+      const now = arrays ? arrays[sliceIndex] : full.subarray(sliceIndex * sliceLength, (sliceIndex + 1) * sliceLength);
+      const base = sliceIndex * sliceLength;
+      for (let local = 0; local < sliceLength; local++) {
+        const isNow = now[local] === segIndex;
+        if (isNow === (before[base + local] === segIndex)) {
+          continue;
+        }
+        const pixel = [local % width, Math.floor(local / width)];
+        const bySlice = isNow ? addedBySlice : removedBySlice;
+        if (!bySlice.has(sliceIndex)) {
+          bySlice.set(sliceIndex, []);
+        }
+        bySlice.get(sliceIndex).push(pixel);
       }
-      const sliceIndex = Math.floor(i / sliceLength);
-      const local = i % sliceLength;
-      const pixel = [local % width, Math.floor(local / width)];
-      const bySlice = after.mask[i] ? addedBySlice : removedBySlice;
-      if (!bySlice.has(sliceIndex)) {
-        bySlice.set(sliceIndex, []);
-      }
-      bySlice.get(sliceIndex).push(pixel);
     }
 
     // One prompt per mode, carrying every touched slice's own mask -

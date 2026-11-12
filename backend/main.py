@@ -168,7 +168,18 @@ class MyApp(MONAILabelApp):
         from lib import run_queue
 
         with run_queue.turn(request.get("run_id")):
-            return super().infer(request, datastore)
+            result = super().infer(request, datastore)
+        # The viewer asks for results in the light run-length form
+        # (lib/label_upload.py) - far less work for the browser than a gzip
+        # NRRD, which matters on tablets and phones.
+        key = "file" if result.get("file") else "label"
+        path = result.get(key)
+        if request.get("result_format") == "rle" and isinstance(path, str) and path.endswith(".nrrd") and os.path.exists(path):
+            from lib.label_upload import nrrd_to_rle
+
+            result[key] = nrrd_to_rle(path)
+            os.remove(path)
+        return result
 
     def init_infers(self) -> Dict[str, InferTask]:
         infers: Dict[str, InferTask] = {}

@@ -24,8 +24,10 @@ import Preprocessing from './actions/Preprocessing';
 import MonaiLabelClient from '../services/MonaiLabelClient';
 import { hideNotification, getLabelColor, describeError } from '../utils/GenericUtils';
 import { Enums } from '@cornerstonejs/tools';
-import { cache, triggerEvent, eventTarget } from '@cornerstonejs/core';
+import { cache } from '@cornerstonejs/core';
 import SegmentationReader from '../utils/SegmentationReader';
+import { compressIfSupported, decodeLabelmap, encodeLabelmap, isRle } from '../utils/labelmapRle';
+import { copyLabelmap, notifyModified, sliceArrays, writeLabelmap } from '../utils/labelmapAccess';
 import annotationHistory from '../utils/AnnotationHistory';
 import { currentSegmentsInfo } from '../utils/SegUtils';
 import SettingsTable from './SettingsTable';
@@ -68,9 +70,6 @@ const LoadIcon = () => (
   </svg>
 );
 
-// Marks a .nrrd as saved by this tool (see buildSegmentationFile), and
-// versions the metadata keys below it.
-const EXPORT_FORMAT = 'ild-semiseg-1';
 
 export default class MonaiLabelPanel extends Component<any, any> {
   static propTypes = {
@@ -271,25 +270,12 @@ export default class MonaiLabelPanel extends Component<any, any> {
     ];
 
     const initialSegs = segmentations[0].config.segments;
-    const volumeLoadObject = cache.getVolume('1');
-    if (!volumeLoadObject) {
-      this.props.commandsManager.runCommand('loadSegmentationsForViewport', {
-        segmentations,
-      });
-
-      // Wait for Above Segmentations to be added/available
-      setTimeout(() => {
-        const { viewport } = this.getActiveViewportInfo();
-        for (const segmentIndex of Object.keys(initialSegs)) {
-          cornerstoneTools.segmentation.config.color.setSegmentIndexColor(
-            viewport.viewportId,
-            '1',
-            initialSegs[segmentIndex].segmentIndex,
-            initialSegs[segmentIndex].color
-          );
-        }
-      }, 1000);
-    }
+    // The labelmap itself is NOT created here: OHIF builds it in one
+    // synchronous block (a labelmap image per CT slice, a volume, GPU
+    // textures for every viewport) that froze the page for seconds right
+    // after connecting, while slices were still loading. It's created on
+    // first use instead - see ensureSegmentation.
+    this.segmentationsSpec = segmentations;
 
     const info = {
       models: models,
@@ -306,6 +292,72 @@ export default class MonaiLabelPanel extends Component<any, any> {
     this.setState({ info: info });
     this.setState({ isDataReady: true }); // Mark as ready
     this.setState({ options: {} });
+  };
+
+  private segmentationsSpec = null;
+  private segmentationCreation: Promise<void> | null = null;
+
+  // Creates the segmentation labelmap the first time something needs it (an
+  // AI result, loading a save, the brush) - not on connect, see onInfo. Safe
+  // to call any number of times; concurrent callers share one creation.
+  ensureSegmentation = async () => {
+    const { segmentationService } = this.props.servicesManager.services;
+    if (segmentationService.getSegmentation('1') || !this.segmentationsSpec) {
+      return;
+    }
+    if (!this.segmentationCreation) {
+      const segmentations = this.segmentationsSpec;
+      this.segmentationCreation = (async () => {
+        const nid = `segprep-${Date.now()}`;
+        this.notification.show({ id: nid, title: 'MONAI Label', message: 'Preparing the segmentation layer...', type: 'loading' });
+        await new Promise((resolve) => setTimeout(resolve, 50)); // let the toast paint first
+        try {
+          await this.props.commandsManager.runCommand('loadSegmentationsForViewport', { segmentations });
+          // The labelmap VOLUME is built asynchronously after that command
+          // returns (cornerstone converts the per-slice labelmap once the
+          // representation reaches a volume viewport). Writing a result before
+          // it exists would silently drop it, so wait for it.
+          const deadline = Date.now() + 20000;
+          while (!this.labelmapVolume() && Date.now() < deadline) {
+            await new Promise((resolve) => setTimeout(resolve, 100));
+          }
+          const applyColors = () => {
+            const { viewport } = this.getActiveViewportInfo();
+            const segments = segmentations[0].config.segments;
+            for (const key of Object.keys(segments)) {
+              cornerstoneTools.segmentation.config.color.setSegmentIndexColor(
+                viewport.viewportId,
+                '1',
+                segments[key].segmentIndex,
+                segments[key].color
+              );
+            }
+          };
+          applyColors();
+          // Again shortly after, in case the representation was still settling
+          // on the viewport (the old connect code waited a second for this).
+          setTimeout(() => {
+            try {
+              applyColors();
+            } catch (e) {
+              console.warn('Could not set segment colors', e);
+            }
+          }, 500);
+        } finally {
+          this.notification.hide(nid);
+        }
+      })().finally(() => {
+        this.segmentationCreation = null;
+      });
+    }
+    return this.segmentationCreation;
+  };
+
+  // The labelmap volume, or null if it doesn't exist yet (see
+  // ensureSegmentation) - segmentationService.getLabelmapVolume throws then.
+  labelmapVolume = () => {
+    const { segmentationService } = this.props.servicesManager.services;
+    return segmentationService.getSegmentation('1') ? segmentationService.getLabelmapVolume('1') : null;
   };
 
   onSelectActionTab = (name) => {
@@ -366,11 +418,7 @@ export default class MonaiLabelPanel extends Component<any, any> {
       mode,
     });
 
-    const ret = SegmentationReader.parseNrrdData(response.data);
-    if (!ret) {
-      throw new Error('Failed to parse NRRD data');
-    }
-
+    await this.ensureSegmentation();
     const labelNames = {};
     const currentSegs = currentSegmentsInfo(
       this.props.servicesManager.services.segmentationService
@@ -399,178 +447,144 @@ export default class MonaiLabelPanel extends Component<any, any> {
       modelToSegMapping[model_seg_idx] = 0xff & seg_idx;
       tmp_model_seg_idx++;
     }
-
     console.log('Index Remap', labels, modelToSegMapping);
-    const data = new Uint8Array(ret.image);
+
+    // The model's value -> this session's segment index, as a lookup table:
+    // the same rule for every voxel, so it's worked out once per value (256)
+    // instead of once per voxel (~80 million).
+    const lut = new Uint8Array(256);
+    for (let midx = 0; midx < 256; midx++) {
+      const sidxForValue = modelToSegMapping[midx];
+      if (midx && sidxForValue) {
+        lut[midx] = sidxForValue;
+      } else if (override && label_class_unknown && labels.length === 1) {
+        lut[midx] = midx ? labelNames[labels[0]] : 0;
+      } else if (labels.length > 0) {
+        lut[midx] = 0;
+      } else {
+        lut[midx] = midx;
+      }
+    }
 
     const { segmentationService } = this.props.servicesManager.services;
-    const volumeLoadObject = segmentationService.getLabelmapVolume('1');
-    if (volumeLoadObject) {
-      // console.log('Volume Object is In Cache....');
-      let convertedData = data;
-      for (let i = 0; i < convertedData.length; i++) {
-        const midx = convertedData[i];
-        const sidx = modelToSegMapping[midx];
-        if (midx && sidx) {
-          convertedData[i] = sidx;
-        } else if (override && label_class_unknown && labels.length === 1) {
-          convertedData[i] = midx ? labelNames[labels[0]] : 0;
-        } else if (labels.length > 0) {
-          convertedData[i] = 0;
-        }
-      }
-
-      if (override === true) {
-        const { segmentationService } = this.props.servicesManager.services;
-        const volumeLoadObject = segmentationService.getLabelmapVolume('1');
-        const { voxelManager } = volumeLoadObject;
-        const scalarData = voxelManager?.getCompleteScalarDataArray();
-
-        // console.log('Current ScalarData: ', scalarData);
-        const currentSegArray = new Uint8Array(scalarData.length);
-        currentSegArray.set(scalarData);
-
-        const numImageFrames =
-          this.getActiveViewportInfo().displaySet.numImageFrames;
-        const sliceLength = scalarData.length / numImageFrames;
-        const sliceBegin = sliceLength * sidx;
-        const sliceEnd = sliceBegin + sliceLength;
-        const [width] = volumeLoadObject.dimensions || [];
-        console.log('xyBounds merge check: ', { xyBounds, mode, dimensions: volumeLoadObject.dimensions, width });
-
-        // xyBounds.zmin/zmax (SAM2 runs only - see SemiSegmentation.tsx's
-        // SAM2_MAX_FRAMES_TO_TRACK) restrict the merge to the slice range
-        // that model actually tracked. Without this, a voxel on some
-        // unrelated slice that just happens to share this run's (x,y) box
-        // reads as "the model decided 0 here" and gets overwritten, when
-        // really the model never looked at that slice at all - its result
-        // array there is just a zero-filled placeholder.
-        const isOutsideBounds = (i) => {
-          if (!xyBounds || !width) {
-            return false;
-          }
-          const local = i % sliceLength;
-          const x = local % width;
-          const y = Math.floor(local / width);
-          const frameIdx = Math.floor(i / sliceLength);
-          return (
-            x < xyBounds.xmin ||
-            x > xyBounds.xmax ||
-            y < xyBounds.ymin ||
-            y > xyBounds.ymax ||
-            (xyBounds.zmin != null && frameIdx < xyBounds.zmin) ||
-            (xyBounds.zmax != null && frameIdx > xyBounds.zmax)
-          );
-        };
-
-        if (mode === 'remove') {
-          // Brush-erase propagation: convertedData is nonzero wherever the
-          // model tracked the erased region onto this slice. Clear exactly
-          // those voxels, and only if they're currently this same class -
-          // every other in-bounds voxel (untracked, or a different class)
-          // is left untouched. This deliberately doesn't reuse the 'add'
-          // merge below: that treats "response says 0 here" as "write 0",
-          // which for a remove-propagated mask would wipe every unrelated
-          // 0/background voxel in the whole padded box instead of just the
-          // specific tracked region.
-          let cleared = 0;
-          for (let i = 0; i < convertedData.length; i++) {
-            if (sidx >= 0 && (i < sliceBegin || i >= sliceEnd)) {
-              continue;
-            }
-            if (isOutsideBounds(i)) {
-              continue;
-            }
-            if (convertedData[i] !== 0 && currentSegArray[i] === convertedData[i]) {
-              currentSegArray[i] = 0;
-              cleared++;
-            }
-          }
-          console.log('remove-mode merge: ', { cleared });
-        } else if (mode === 'add-brush') {
-          // Brush-add propagation: convertedData is nonzero wherever the
-          // model tracked the newly painted region onto this slice. Only
-          // ADD those voxels in as this class - never clear anything to 0,
-          // unlike the plain 'add' branch below, which treats "response
-          // says 0 here" as "write 0" (correcting the box). That's right
-          // for a fresh ROI prompt, but here it would wipe out unrelated,
-          // untouched same-class mask that just happens to fall inside the
-          // padded margin/z-range around the brush stroke.
-          let added = 0;
-          for (let i = 0; i < convertedData.length; i++) {
-            if (sidx >= 0 && (i < sliceBegin || i >= sliceEnd)) {
-              continue;
-            }
-            if (isOutsideBounds(i)) {
-              continue;
-            }
-            if (convertedData[i] !== 0) {
-              currentSegArray[i] = convertedData[i];
-              added++;
-            }
-          }
-          console.log('add-brush merge: ', { added });
-        } else {
-          // get unique values to determine which organs to update, keep rest
-          const updateTargets = new Set(convertedData);
-
-          let nonZeroOutsideBefore = 0;
-          if (xyBounds && width) {
-            for (let i = 0; i < scalarData.length; i++) {
-              if (scalarData[i] === 0) continue;
-              if (isOutsideBounds(i)) {
-                nonZeroOutsideBefore++;
-              }
-            }
-          }
-          window.__debugOverwrites = 0;
-
-          for (let i = 0; i < convertedData.length; i++) {
-            if (sidx >= 0 && (i < sliceBegin || i >= sliceEnd)) {
-              continue;
-            }
-
-            if (isOutsideBounds(i)) {
-              continue;
-            }
-
-            if (
-              convertedData[i] !== 255 &&
-              updateTargets.has(currentSegArray[i])
-            ) {
-              if (currentSegArray[i] !== 0) {
-                window.__debugOverwrites = (window.__debugOverwrites || 0) + 1;
-              }
-              currentSegArray[i] = convertedData[i];
-            }
-          }
-          let nonZeroOutsideAfter = 0;
-          if (xyBounds && width) {
-            for (let i = 0; i < currentSegArray.length; i++) {
-              if (currentSegArray[i] === 0) continue;
-              if (isOutsideBounds(i)) {
-                nonZeroOutsideAfter++;
-              }
-            }
-          }
-          console.log('outside-xyBounds preservation check: ', {
-            nonZeroOutsideBefore,
-            nonZeroOutsideAfter,
-            overwritesInsideBounds: window.__debugOverwrites,
-          });
-        }
-
-        convertedData = currentSegArray;
-      }
-      const { voxelManager } = volumeLoadObject;
-      voxelManager?.setCompleteScalarDataArray(convertedData);
-      triggerEvent(eventTarget, Enums.Events.SEGMENTATION_DATA_MODIFIED, {
-        segmentationId: '1',
+    const volumeLoadObject = this.labelmapVolume();
+    if (!volumeLoadObject) {
+      console.error('Segmentation layer not available - result not shown');
+      this.notification.show({
+        title: 'MONAI Label',
+        message: 'The result arrived, but the segmentation layer is not ready yet - please run it again.',
+        type: 'error',
+        duration: 10000,
       });
-      console.log("updated the segmentation's scalar data");
-    } else {
-      console.log('TODO:: Volume Object is NOT In Cache....');
+      return;
     }
+    const { voxelManager } = volumeLoadObject;
+    const [width, height, depth] = volumeLoadObject.dimensions || [];
+    const total = width * height * depth;
+
+    // AI results normally arrive run-length encoded (result_format 'rle' -
+    // see MonaiLabelClient._infer): rebuilt with block fills. A plain NRRD
+    // (older server) still works, remapped voxel by voxel.
+    let convertedData;
+    let present;
+    if (isRle(response.data)) {
+      ({ data: convertedData, present } = decodeLabelmap(response.data, total, lut));
+    } else {
+      const ret = SegmentationReader.parseNrrdData(response.data);
+      if (!ret) {
+        throw new Error('Failed to parse NRRD data');
+      }
+      convertedData = new Uint8Array(ret.image);
+      present = new Uint8Array(256);
+      for (let i = 0; i < convertedData.length; i++) {
+        const v = lut[convertedData[i]];
+        convertedData[i] = v;
+        present[v] = 1;
+      }
+    }
+
+    if (override === true) {
+      const sliceLength = width * height;
+      // Only the region this run covered is visited (not the whole volume):
+      // the slice the run was for (sidx), the in-plane box xyBounds, and -
+      // SAM2 runs only, see SemiSegmentation.tsx's SAM2_MAX_FRAMES_TO_TRACK -
+      // xyBounds.zmin/zmax, the slices that model actually tracked. Outside
+      // them the result array is just a zero-filled placeholder, so writing
+      // it would wipe unrelated segmentation; and outside the box, "preserve
+      // other classes" must not touch an earlier, disjoint ROI's result.
+      let z0 = 0;
+      let z1 = depth - 1;
+      let y0 = 0;
+      let y1 = height - 1;
+      let x0 = 0;
+      let x1 = width - 1;
+      if (sidx >= 0) {
+        z0 = z1 = sidx;
+      }
+      if (xyBounds && width) {
+        x0 = Math.max(x0, xyBounds.xmin);
+        x1 = Math.min(x1, xyBounds.xmax);
+        y0 = Math.max(y0, xyBounds.ymin);
+        y1 = Math.min(y1, xyBounds.ymax);
+        if (xyBounds.zmin != null) {
+          z0 = Math.max(z0, xyBounds.zmin);
+        }
+        if (xyBounds.zmax != null) {
+          z1 = Math.min(z1, xyBounds.zmax);
+        }
+      }
+      console.log('merge region: ', { mode, x0, x1, y0, y1, z0, z1, dimensions: volumeLoadObject.dimensions });
+
+      // Edited in place in the live slices (labelmapAccess) - no whole-volume
+      // copy - and only slices z0..z1 are redrawn.
+      const arrays = sliceArrays(volumeLoadObject);
+      const full = arrays ? null : voxelManager?.getCompleteScalarDataArray();
+      let changed = 0;
+      for (let z = z0; z <= z1; z++) {
+        const current = arrays ? arrays[z] : full.subarray(z * sliceLength, (z + 1) * sliceLength);
+        const offset = z * sliceLength;
+        for (let y = y0; y <= y1; y++) {
+          for (let j = y * width + x0, end = y * width + x1; j <= end; j++) {
+            const v = convertedData[offset + j];
+            if (mode === 'remove') {
+              // Brush-erase propagation: clear exactly the voxels the model
+              // tracked the erased region onto, and only if they're currently
+              // this same class - never "response says 0 here, write 0",
+              // which would wipe every background voxel in the padded box.
+              if (v !== 0 && current[j] === v) {
+                current[j] = 0;
+                changed++;
+              }
+            } else if (mode === 'add-brush') {
+              // Brush-paint propagation: only ADD the tracked voxels, never
+              // clear anything - a brush stroke is a deliberate edit, so
+              // SAM2's padded margin mustn't "correct" untouched mask nearby.
+              if (v !== 0) {
+                current[j] = v;
+                changed++;
+              }
+            } else if (v !== 255 && present[current[j]]) {
+              // 'add': within the region, the model redoes the classes it
+              // returned (and background); other classes are kept.
+              current[j] = v;
+              changed++;
+            }
+          }
+        }
+      }
+      console.log('merge done: ', { mode, changed });
+      const slices = z1 >= z0 ? Array.from({ length: z1 - z0 + 1 }, (_, k) => z0 + k) : [];
+      if (arrays) {
+        notifyModified(volumeLoadObject, slices);
+      } else if (full) {
+        writeLabelmap(volumeLoadObject, full, slices);
+      }
+      return;
+    }
+
+    // One compact undo step for the whole result - no full-volume diff.
+    annotationHistory.recordReplace(() => writeLabelmap(volumeLoadObject, convertedData), convertedData);
+    console.log("updated the segmentation's scalar data");
   };
 
   openConfigurations = (e) => {
@@ -605,12 +619,18 @@ export default class MonaiLabelPanel extends Component<any, any> {
   // Saves go to the server, in the logged-in user's own store (one file per
   // save, tag 'save-<timestamp>'), so they can be loaded again from any device
   // (Load dialog) and Regional Stats reads them (backend/lib/regional_stats.py).
-  onSaveSegmentation = async () => {
-    const saved = await this.saveToServer();
+  onSaveSegmentation = async (encoded) => {
+    // Shown at once, then replaced in place (same id) by the result.
+    const nid = `save-${Date.now()}`;
+    this.notification.show({ id: nid, title: 'MONAI Label', message: 'Saving segmentation on the server...', type: 'loading' });
+    await new Promise((resolve) => setTimeout(resolve, 50)); // let the toast paint first
+    const saved = await this.saveToServer(encoded);
     if (saved === null) {
+      this.notification.hide(nid);
       return;
     }
     this.notification.show({
+      id: nid,
       title: 'MONAI Label',
       message: saved ? 'Segmentation saved on the server' : 'Saving failed - please try again',
       type: saved ? 'success' : 'error',
@@ -620,66 +640,89 @@ export default class MonaiLabelPanel extends Component<any, any> {
 
   // Auto-fills the confirm dialog from the current segmentation state:
   // whichever model most recently ran (onModelUsed), and whichever classes
-  // actually have voxels right now (not just whatever's in the global
-  // label list, most of which are usually unpainted).
+  // actually have voxels right now. The labelmap is encoded once here and the
+  // same upload is sent on confirm.
   onClickSaveSegmentation = (e) => {
     e.preventDefault();
-
-    const { segmentationService, uiDialogService } = this.props.servicesManager.services;
-    const volumeLoadObject = segmentationService.getLabelmapVolume('1');
-    const scalarData = volumeLoadObject?.voxelManager?.getCompleteScalarDataArray();
-    if (!scalarData) {
-      this.notification.show({
-        title: 'MONAI Label',
-        message: 'Nothing to save yet',
-        type: 'warning',
-        duration: 4000,
-      });
+    const encoded = this.encodeSegmentation();
+    if (!encoded) {
       return;
     }
-
-    const classes = this.presentClasses(scalarData).map((c) => c.name);
+    const { uiDialogService } = this.props.servicesManager.services;
+    const classes = encoded.classes.map((c) => c.name);
     saveSegmentationDialog(uiDialogService, { model: this.lastUsedModel, classes }, () => {
-      this.onSaveSegmentation();
+      this.onSaveSegmentation(encoded);
     });
   };
 
-  // Classes that actually have voxels in scalarData (not just every label in
-  // the session's list, most of which are usually unpainted), ascending by
-  // their voxel index in this session.
-  presentClasses = (scalarData) => {
-    const presentIndices = new Set();
-    for (let i = 0; i < scalarData.length; i++) {
-      if (scalarData[i]) {
-        presentIndices.add(scalarData[i]);
-      }
+  // The current segmentation in its light upload form (utils/labelmapRle.js)
+  // plus what the server needs to write the stored .nrrd: geometry, and the
+  // classes with voxels as {name, index, color}. Voxel indices are only
+  // meaningful within one session (the alphabetical union of whatever models
+  // the server has loaded - see onInfo), so the file records each class's NAME
+  // next to its index; onImportSegmentationFile remaps by name.
+  // null if there's nothing to save (already reported).
+  encodeSegmentation = () => {
+    const { segmentationService } = this.props.servicesManager.services;
+    const volumeLoadObject = this.labelmapVolume();
+    const scalarData = volumeLoadObject ? copyLabelmap(volumeLoadObject) : null;
+    const { displaySet } = this.getActiveViewportInfo();
+    const nothing = () => {
+      this.notification.show({ title: 'MONAI Label', message: 'Nothing to save yet', type: 'warning', duration: 4000 });
+      return null;
+    };
+    if (!scalarData || !displaySet) {
+      return nothing();
     }
 
-    const { segmentationService } = this.props.servicesManager.services;
+    const { parts, seen } = encodeLabelmap(scalarData);
     const { info } = currentSegmentsInfo(segmentationService);
-    return Object.keys(info)
-      .filter((name) => presentIndices.has(info[name].segmentIndex))
+    const classes = Object.keys(info)
       .map((name) => ({ name, index: info[name].segmentIndex, color: info[name].color }))
+      .filter((c) => c.index > 0 && c.index < 256 && seen[c.index])
       .sort((a, b) => a.index - b.index);
+    if (!classes.length) {
+      return nothing();
+    }
+
+    return {
+      parts,
+      classes,
+      displaySet,
+      geometry: {
+        sizes: Array.from(volumeLoadObject.dimensions),
+        spacing: Array.from(volumeLoadObject.spacing),
+        direction: Array.from(volumeLoadObject.direction),
+        origin: Array.from(volumeLoadObject.origin),
+      },
+    };
   };
 
   // Stores the current segmentation on the server under its own
-  // 'save-<timestamp>' tag. info.classes (names sorted by live voxel index -
-  // see presentClasses) is what Regional Stats reads; the file's own header
-  // carries the full {name, index, color} list that Load remaps by.
+  // 'save-<timestamp>' tag; the server writes the .nrrd (backend/lib/label_upload.py).
   // Returns true/false, or null if there was nothing to save (already
   // reported); callers own the success/failure notification.
-  saveToServer = async () => {
-    const built = this.buildSegmentationFile();
-    if (!built) {
+  saveToServer = async (encoded = this.encodeSegmentation()) => {
+    if (!encoded) {
       return null;
     }
+    const savedAt = new Date();
+    const { displaySet } = encoded;
     try {
+      const body = await compressIfSupported(new Blob(encoded.parts));
       const response = await this.client().save_label(
-        built.seriesUID,
-        new Blob([built.buffer]),
-        { model: this.lastUsedModel || '', classes: built.classes.map(c => c.name), saved_at: built.savedAt.toISOString() },
-        `save-${built.savedAt.getTime()}`
+        displaySet.SeriesInstanceUID,
+        body,
+        {
+          model: this.lastUsedModel || '',
+          classes: encoded.classes,
+          geometry: encoded.geometry,
+          study_instance_uid: displaySet.StudyInstanceUID,
+          series_instance_uid: displaySet.SeriesInstanceUID,
+          saved_at: savedAt.toISOString(),
+        },
+        `save-${savedAt.getTime()}`,
+        'label.ildrle'
       );
       if (response.status !== 200) {
         console.error('Failed to save segmentation to the server', response);
@@ -690,53 +733,6 @@ export default class MonaiLabelPanel extends Component<any, any> {
       console.error('Failed to save segmentation to the server', e);
       return false;
     }
-  };
-
-  // The current segmentation as one self-contained, gzip-compressed .nrrd
-  // (null if there's nothing to save - already reported). Voxel indices are
-  // only meaningful within one session (they come from the alphabetical
-  // union of whatever models the server has loaded - see onInfo), so the
-  // file records each class's NAME next to its index;
-  // onImportSegmentationFile remaps by name.
-  buildSegmentationFile = () => {
-    const { segmentationService } = this.props.servicesManager.services;
-    const volumeLoadObject = segmentationService.getLabelmapVolume('1');
-    const scalarData = volumeLoadObject?.voxelManager?.getCompleteScalarDataArray();
-    const { displaySet } = this.getActiveViewportInfo();
-    const classes = scalarData ? this.presentClasses(scalarData) : [];
-    if (!classes.length || !displaySet) {
-      this.notification.show({
-        title: 'MONAI Label',
-        message: 'Nothing to save yet',
-        type: 'warning',
-        duration: 4000,
-      });
-      return null;
-    }
-
-    const savedAt = new Date();
-    const buffer = SegmentationReader.writeNrrdData(
-      new Uint8Array(scalarData),
-      {
-        sizes: volumeLoadObject.dimensions,
-        direction: volumeLoadObject.direction,
-        spacing: volumeLoadObject.spacing,
-        origin: volumeLoadObject.origin,
-      },
-      {
-        gzip: true,
-        keyValues: {
-          format: EXPORT_FORMAT,
-          model: this.lastUsedModel || '',
-          classes: JSON.stringify(classes),
-          study_instance_uid: displaySet.StudyInstanceUID,
-          series_instance_uid: displaySet.SeriesInstanceUID,
-          saved_at: savedAt.toISOString(),
-        },
-      }
-    );
-
-    return { buffer, classes, savedAt, seriesUID: displaySet.SeriesInstanceUID };
   };
 
   // Opens the list of this series' saves on the server (Load / Download /
@@ -793,13 +789,31 @@ export default class MonaiLabelPanel extends Component<any, any> {
     const { uiDialogService } = this.props.servicesManager.services;
     loadSegmentationDialog(uiDialogService, saves, {
       onLoad: async save => {
+        const nid = `load-${Date.now()}`;
+        this.notification.show({ id: nid, title: 'MONAI Label', message: 'Loading segmentation...', type: 'loading' });
         try {
-          const buffer = await fetchSave(save);
+          // Run-length encoded by the server (lib/user_context.py), so the
+          // browser never decompresses the whole volume itself.
+          const r = await this.client().download_label_rle(seriesUID, save.tag);
+          if (r.status !== 200) {
+            throw new Error(describeError(r));
+          }
+          const meta = JSON.parse(r.headers?.['x-label-meta'] || '{}');
+          const total = (meta.sizes || []).reduce((a, b) => a * b, 1);
           await this.onImportSegmentationFile(
-            { name: `the save from ${save.savedAt?.toLocaleString() ?? save.tag}`, arrayBuffer: async () => buffer },
-            { fromServer: true }
+            { name: `the save from ${save.savedAt?.toLocaleString() ?? save.tag}` },
+            {
+              fromServer: true,
+              nid,
+              loaded: {
+                sizes: meta.sizes || [],
+                keys: meta.keys || {},
+                decode: (lut) => decodeLabelmap(r.data as ArrayBuffer, total, lut).data,
+              },
+            }
           );
         } catch (err) {
+          this.notification.hide(nid);
           failed('Loading the segmentation', err);
         }
       },
@@ -832,7 +846,10 @@ export default class MonaiLabelPanel extends Component<any, any> {
         input.onchange = () => {
           const file = input.files?.[0];
           if (file) {
-            this.onImportSegmentationFile(file);
+            const nid = `load-${Date.now()}`;
+            this.notification.show({ id: nid, title: 'MONAI Label', message: 'Loading segmentation...', type: 'loading' });
+            // let the toast paint before the file is read and decoded
+            setTimeout(() => this.onImportSegmentationFile(file, { nid }), 50);
           }
         };
         input.click();
@@ -840,35 +857,51 @@ export default class MonaiLabelPanel extends Component<any, any> {
     });
   };
 
-  // Loads a segmentation saved by buildSegmentationFile - from the server, or
+  // Loads a segmentation saved via saveToServer - from the server, or
   // a downloaded .nrrd on this or any other device. Also accepts a plain uint8
   // label NRRD without this tool's metadata (e.g. one written by another
   // tool, or a server save from before the header was added), in which case
   // voxel values are taken as this session's segment indices.
   // fromServer: it is already stored there, so don't save it again.
-  onImportSegmentationFile = async (file, { fromServer = false } = {}) => {
-    const fail = (message) =>
-      this.notification.show({ title: 'MONAI Label', message, type: 'error', duration: 8000 });
+  // `loaded` (a save from the server - see onClickLoadSegmentation):
+  // {sizes, keys, decode(lut)} with the voxels still run-length encoded, so
+  // they're rebuilt and remapped in one pass of block fills. Without it, `file`
+  // is a .nrrd from the computer, parsed here.
+  // `nid`: id of a "Loading..." toast already showing - the result replaces it.
+  onImportSegmentationFile = async (file, { fromServer = false, loaded = null, nid = null } = {}) => {
+    const toast = { title: 'MONAI Label', ...(nid ? { id: nid } : {}) };
+    const fail = (message) => this.notification.show({ ...toast, message, type: 'error', duration: 8000 });
 
-    let ret;
-    try {
-      ret = SegmentationReader.parseNrrdData(await file.arrayBuffer());
-    } catch (err) {
-      console.error('Failed to parse loaded segmentation', err);
-      fail(`${file.name} is not a readable NRRD segmentation file`);
-      return;
+    if (!loaded) {
+      try {
+        const ret = SegmentationReader.parseNrrdData(await file.arrayBuffer());
+        const data = new Uint8Array(ret.image);
+        loaded = {
+          sizes: ret.header.sizes || [],
+          keys: ret.header.keys || {},
+          decode: (lut) => {
+            const out = new Uint8Array(data.length);
+            for (let i = 0; i < data.length; i++) {
+              out[i] = lut[data[i]];
+            }
+            return out;
+          },
+        };
+      } catch (err) {
+        console.error('Failed to parse loaded segmentation', err);
+        fail(`${file.name} is not a readable NRRD segmentation file`);
+        return;
+      }
     }
 
     const { segmentationService } = this.props.servicesManager.services;
-    const volumeLoadObject = segmentationService.getLabelmapVolume('1');
-    const scalarData = volumeLoadObject?.voxelManager?.getCompleteScalarDataArray();
+    await this.ensureSegmentation();
+    const volumeLoadObject = this.labelmapVolume();
     const { displaySet } = this.getActiveViewportInfo();
-    const data = new Uint8Array(ret.image);
-    const sizes = ret.header.sizes || [];
+    const sizes = loaded.sizes;
     const dims = volumeLoadObject?.dimensions || [];
     if (
-      !scalarData ||
-      data.length !== scalarData.length ||
+      !volumeLoadObject?.voxelManager ||
       sizes.length !== dims.length ||
       sizes.some((s, i) => s !== dims[i])
     ) {
@@ -879,7 +912,7 @@ export default class MonaiLabelPanel extends Component<any, any> {
       return;
     }
 
-    const keys = ret.header.keys || {};
+    const keys = loaded.keys;
     if (
       keys.series_instance_uid &&
       displaySet &&
@@ -889,6 +922,9 @@ export default class MonaiLabelPanel extends Component<any, any> {
           'Its size matches, but the anatomy may not. Load it anyway?'
       )
     ) {
+      if (nid) {
+        this.notification.hide(nid);
+      }
       return;
     }
 
@@ -916,19 +952,19 @@ export default class MonaiLabelPanel extends Component<any, any> {
       });
     }
 
-    const remapped = new Uint8Array(data.length);
-    for (let i = 0; i < data.length; i++) {
-      remapped[i] = lookup[data[i]];
+    let remapped;
+    try {
+      remapped = loaded.decode(lookup);
+    } catch (err) {
+      console.error('Failed to decode loaded segmentation', err);
+      fail(`${file.name} could not be read: ${err?.message || err}`);
+      return;
     }
 
-    volumeLoadObject.voxelManager.setCompleteScalarDataArray(remapped);
-    triggerEvent(eventTarget, Enums.Events.SEGMENTATION_DATA_MODIFIED, {
-      segmentationId: '1',
-    });
     // This is a wholesale state install, not a user edit - see
     // resetBaseline's own comment for why undo shouldn't be able to step
     // back past it to whatever segmentation existed before.
-    annotationHistory.resetBaseline();
+    annotationHistory.installState(() => writeLabelmap(volumeLoadObject, remapped), remapped);
     if (keys.model) {
       // Later saves and Regional Stats then attribute this segmentation to
       // the model that originally produced it.
@@ -945,7 +981,7 @@ export default class MonaiLabelPanel extends Component<any, any> {
       synced ? '' : "storing it on the server failed, so it won't be in the Load list or Regional Stats",
     ].filter(Boolean);
     this.notification.show({
-      title: 'MONAI Label',
+      ...toast,
       message: problems.length
         ? `Loaded ${file.name}${source}, but ${problems.join('; ')}`
         : `Loaded ${file.name}${source}`,
@@ -956,19 +992,15 @@ export default class MonaiLabelPanel extends Component<any, any> {
 
   resetSegmentation = () => {
     const { segmentationService } = this.props.servicesManager.services;
-    const volumeLoadObject = segmentationService.getLabelmapVolume('1');
+    const volumeLoadObject = this.labelmapVolume();
     if (!volumeLoadObject) {
       return;
     }
-    const { voxelManager } = volumeLoadObject;
-    const scalarData = voxelManager?.getCompleteScalarDataArray();
-    if (!scalarData) {
+    const [width, height, depth] = volumeLoadObject.dimensions || [];
+    if (!depth) {
       return;
     }
-    voxelManager.setCompleteScalarDataArray(new Uint8Array(scalarData.length));
-    triggerEvent(eventTarget, Enums.Events.SEGMENTATION_DATA_MODIFIED, {
-      segmentationId: '1',
-    });
+    writeLabelmap(volumeLoadObject, new Uint8Array(width * height * depth));
   };
 
   render() {
@@ -1064,6 +1096,7 @@ export default class MonaiLabelPanel extends Component<any, any> {
               servicesManager={this.props.servicesManager}
               commandsManager={this.props.commandsManager}
               resetSegmentation={this.resetSegmentation}
+              ensureSegmentation={this.ensureSegmentation}
               onModelUsed={this.onModelUsed}
             />
             <ClassPrompts

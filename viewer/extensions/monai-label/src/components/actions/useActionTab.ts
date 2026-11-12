@@ -31,6 +31,8 @@ export interface ActionTabProps {
   servicesManager?: any;
   commandsManager?: any;
   onModelUsed?: (model: string) => void;
+  // Creates the segmentation layer if it doesn't exist yet (MonaiLabelPanel).
+  ensureSegmentation?: () => Promise<void>;
 }
 
 // Shared setup every action tab needs: one notification/modal service

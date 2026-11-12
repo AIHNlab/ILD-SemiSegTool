@@ -53,6 +53,57 @@ async def _json(send, code, data):
     await send({"type": "http.response.body", "body": body})
 
 
+async def _saved_label_rle(scope, send, user):
+    """GET /datastore/label/rle?label=<image id>&tag=<tag>: one of the user's
+    saved segmentations, run-length encoded (lib/label_upload.py), with its
+    size and metadata (classes, model, ...) as JSON in the X-Label-Meta header.
+    The viewer's Load uses this instead of the .nrrd file itself."""
+    from urllib.parse import parse_qs
+
+    import anyio
+
+    query = parse_qs(scope.get("query_string", b"").decode("latin-1"))
+    label, tag = (query.get("label") or [""])[0], (query.get("tag") or [""])[0]
+
+    def work():
+        from monailabel.interfaces.utils.app import app_instance
+
+        from lib.label_upload import saved_label_rle
+
+        token = current_user.set(user)  # picks this user's own datastore
+        try:
+            uri = app_instance().datastore().get_label_uri(label, tag) if label and tag else ""
+            return saved_label_rle(uri) if uri and uri.endswith(".nrrd") else None
+        finally:
+            current_user.reset(token)
+
+    try:
+        found = await anyio.to_thread.run_sync(work)
+    except Exception as e:
+        logger.exception(f"user={user} GET /datastore/label/rle failed")
+        await _json(send, 500, {"detail": f"Could not read the saved segmentation: {e}"})
+        return
+    if not found:
+        await _json(send, 404, {"detail": "No such saved segmentation"})
+        return
+    body, meta = found
+    await send(
+        {
+            "type": "http.response.start",
+            "status": 200,
+            "headers": [
+                (b"content-type", b"application/octet-stream"),
+                (b"content-length", str(len(body)).encode()),
+                (b"cache-control", b"no-store"),
+                # ASCII-only JSON, so any class name is a valid header value.
+                (b"x-label-meta", json.dumps(meta, ensure_ascii=True).encode()),
+            ],
+        }
+    )
+    await send({"type": "http.response.body", "body": body})
+    logger.info(f"user={user} GET /datastore/label/rle tag={tag} -> 200 ({len(body)} bytes)")
+
+
 async def _reject(send):
     await _json(send, 401, {"detail": "Not logged in"})
 
@@ -71,6 +122,9 @@ def wrap(inner):
             from lib import run_queue
 
             await _json(send, 200, run_queue.status(scope["path"][len("/run-status/"):]))
+            return
+        if scope["path"] == "/datastore/label/rle" and scope["method"] == "GET":
+            await _saved_label_rle(scope, send, user)
             return
         status = {}
 

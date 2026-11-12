@@ -70,6 +70,9 @@ export default class MonaiLabelClient {
       params.result_extension = result_extension;
       params.result_dtype = 'uint8';
       params.result_compress = false;
+      // Sent back run-length encoded (backend MyApp.infer) - far less work for
+      // the browser than a gzip NRRD; updateView still reads either.
+      params.result_format = 'rle';
     }
 
     // return the indexes as defined in the config file
@@ -93,7 +96,7 @@ export default class MonaiLabelClient {
     return await MonaiLabelClient.api_post(url, params, null, false, 'json');
   }
 
-  async save_label(image, label, params, tag = 'final') {
+  async save_label(image, label, params, tag = 'final', fileName = 'label.nrrd') {
     let url = new URL('datastore/label', this.server_url);
     url.searchParams.append('image', image);
     url.searchParams.append('tag', tag);
@@ -108,7 +111,7 @@ export default class MonaiLabelClient {
       params,
       label,
       'label',
-      'label.nrrd'
+      fileName
     );
 
     return await MonaiLabelClient.api_put_data(url, data, 'json');
@@ -160,6 +163,16 @@ export default class MonaiLabelClient {
   }
 
   // The saved .nrrd file itself, as an ArrayBuffer (response.data).
+  // A saved segmentation run-length encoded, for loading into the viewer
+  // (backend lib/user_context.py): response.data is the ArrayBuffer and the
+  // X-Label-Meta header carries {sizes, keys} (classes, model, ...).
+  async download_label_rle(image, tag) {
+    let url = new URL('datastore/label/rle', this.server_url);
+    url.searchParams.append('label', image);
+    url.searchParams.append('tag', tag);
+    return await MonaiLabelClient.api_get_data(url.toString(), 'arraybuffer');
+  }
+
   async download_label(image, tag) {
     let url = new URL('datastore/label', this.server_url);
     url.searchParams.append('label', image);

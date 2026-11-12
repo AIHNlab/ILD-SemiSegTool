@@ -45,10 +45,35 @@ const { availableLanguages, defaultLanguage, currentLanguage } = i18n;
 
 const seriesInStudiesMap = new Map();
 
-/**
- * TODO:
- * - debounce `setFilterValues` (150ms?)
- */
+// Deletes a series from the logged-in user's own Orthanc through its REST API
+// (appConfig.orthancRoot - the gateway sends /orthanc/* to that user's own
+// Orthanc, see docker/gateway/Caddyfile, so nobody can reach anyone else's).
+// Orthanc removes the study too once its last series is gone.
+async function deleteSeriesFromOrthanc(orthancRoot: string, seriesInstanceUid: string) {
+  const root = orthancRoot.replace(/\/+$/, '');
+  const lookup = await fetch(`${root}/tools/lookup`, {
+    method: 'POST',
+    body: seriesInstanceUid,
+    credentials: 'same-origin',
+  });
+  if (!lookup.ok) {
+    throw new Error(`looking the series up failed (HTTP ${lookup.status})`);
+  }
+  const matches = (await lookup.json()).filter(match => match.Type === 'Series');
+  if (!matches.length) {
+    throw new Error('the series is no longer on the server');
+  }
+  for (const { ID } of matches) {
+    const response = await fetch(`${root}/series/${encodeURIComponent(ID)}`, {
+      method: 'DELETE',
+      credentials: 'same-origin',
+    });
+    if (!response.ok) {
+      throw new Error(`deleting failed (HTTP ${response.status})`);
+    }
+  }
+}
+
 function WorkList({
   data: studies,
   dataTotal: studiesTotal,
@@ -59,6 +84,49 @@ function WorkList({
   onRefresh,
   servicesManager,
 }: withAppTypes) {
+  // Series being deleted right now (its Delete button shows busy).
+  const [deletingSeries, setDeletingSeries] = useState<string | null>(null);
+
+  const onDeleteSeries = async (studyInstanceUid, series, isLastSeries) => {
+    const what = `${series.description || 'series'}${series.seriesNumber != null && series.seriesNumber !== '' ? ` (series ${series.seriesNumber})` : ''}`;
+    if (
+      !window.confirm(
+        `Delete "${what}" (${series.numSeriesInstances || 0} images) from the server?\n\n` +
+          (isLastSeries ? 'It is the only series of this study, so the study is removed too.\n\n' : '') +
+          'This removes the images for good and cannot be undone.'
+      )
+    ) {
+      return;
+    }
+    const { uiNotificationService } = servicesManager.services;
+    setDeletingSeries(series.seriesInstanceUid);
+    try {
+      await deleteSeriesFromOrthanc(appConfig.orthancRoot, series.seriesInstanceUid);
+      // Reload this study's series; rows are remembered by position, which
+      // no longer matches if the whole study disappeared.
+      seriesInStudiesMap.delete(studyInstanceUid);
+      setStudiesWithSeriesData(uids => uids.filter(uid => uid !== studyInstanceUid));
+      if (isLastSeries) {
+        setExpandedRows([]);
+      }
+      uiNotificationService.show({
+        title: 'Series deleted',
+        message: `"${what}" was removed from the server.`,
+        type: 'success',
+        duration: 4000,
+      });
+      onRefresh();
+    } catch (err) {
+      uiNotificationService.show({
+        title: 'Delete failed',
+        message: `Could not delete "${what}": ${err?.message || err}`,
+        type: 'error',
+        duration: 8000,
+      });
+    } finally {
+      setDeletingSeries(null);
+    }
+  };
   const { hotkeyDefinitions, hotkeyDefaults } = hotkeysManager;
   const { show, hide } = useModal();
   const { t } = useTranslation();
@@ -225,6 +293,11 @@ function WorkList({
     // Note: expanded rows index begins at 1
     for (let z = 0; z < expandedRows.length; z++) {
       const expandedRowIndex = expandedRows[z] - 1;
+      // The list can be shorter than the remembered expanded rows for a
+      // moment (it is emptied while refreshing, e.g. after a delete).
+      if (!sortedStudies[expandedRowIndex]) {
+        continue;
+      }
       const studyInstanceUid = sortedStudies[expandedRowIndex].studyInstanceUid;
 
       if (studiesWithSeriesData.includes(studyInstanceUid)) {
@@ -342,15 +415,36 @@ function WorkList({
             seriesNumber: t('StudyList:Series'),
             modality: t('StudyList:Modality'),
             instances: t('StudyList:Instances'),
+            ...(appConfig.orthancRoot ? { actions: '' } : {}),
           }}
           seriesTableDataSource={
             seriesInStudiesMap.has(studyInstanceUid)
-              ? seriesInStudiesMap.get(studyInstanceUid).map(s => {
+              ? seriesInStudiesMap.get(studyInstanceUid).map((s, _i, all) => {
                   return {
                     description: s.description || '(empty)',
                     seriesNumber: s.seriesNumber ?? '',
                     modality: s.modality || '',
                     instances: s.numSeriesInstances || '',
+                    ...(appConfig.orthancRoot
+                      ? {
+                          actions: (
+                            <button
+                              type="button"
+                              className="text-primary-light hover:text-red-500 flex items-center gap-1 text-[13px] disabled:opacity-50"
+                              disabled={deletingSeries === s.seriesInstanceUid}
+                              title="Delete this series from the server"
+                              data-cy={`delete-series-${s.seriesInstanceUid}`}
+                              onClick={event => {
+                                event.stopPropagation();
+                                onDeleteSeries(studyInstanceUid, s, all.length === 1);
+                              }}
+                            >
+                              <Icon className="!h-[16px] !w-[16px]" name="old-trash" />
+                              {deletingSeries === s.seriesInstanceUid ? 'Deleting...' : 'Delete'}
+                            </button>
+                          ),
+                        }
+                      : {}),
                   };
                 })
               : []

@@ -1,5 +1,7 @@
-import { eventTarget, getEnabledElements, cache, triggerEvent } from '@cornerstonejs/core';
+import { eventTarget, getEnabledElements, cache } from '@cornerstonejs/core';
 import * as cornerstoneTools from '@cornerstonejs/tools';
+import { copyLabelmap, notifyModified, sliceArrays, writeLabelmap } from './labelmapAccess';
+import { decodeLabelmap, encodeLabelmapBuffer, IDENTITY_LUT } from './labelmapRle';
 
 const TRACKED_TOOLS = [
   'ProbeMONAILabel',
@@ -28,7 +30,14 @@ type VoxelsEntry = {
   oldValues: Uint8Array;
   newValues: Uint8Array;
 };
-type HistoryEntry = AnnotationEntry | VoxelsEntry;
+// A change touching very many voxels (a whole AI result): stored as compact
+// run-length copies of the whole labelmap before and after, not per voxel -
+// ~1-2 MB instead of ~60 MB for 10 million changed voxels.
+type VolumeEntry = { type: 'volume'; before: ArrayBuffer; after: ArrayBuffer };
+type HistoryEntry = AnnotationEntry | VoxelsEntry | VolumeEntry;
+
+// Above this many changed voxels an edit is stored as a VolumeEntry.
+const LARGE_CHANGE = 1_000_000;
 
 /**
  * Removing/re-adding annotations via the state API doesn't trigger the SVG
@@ -87,10 +96,6 @@ class AnnotationHistory {
   // including undo/redo's own writes (those go through suppressTracking so
   // they don't ALSO get diffed back into a new entry).
   private lastScalarData: Uint8Array | null = null;
-  // Accumulates changes across the current coalescing window before they
-  // become a real undo entry - keyed by voxel index so repeated touches
-  // within one stroke keep the ORIGINAL pre-stroke value as "old".
-  private pendingChanges: Map<number, { oldValue: number; newValue: number }> | null = null;
   private coalesceTimer: ReturnType<typeof setTimeout> | null = null;
   // Slice indices touched since the last flush, recorded cheaply by
   // onSegmentationModified while a stroke is still in progress - the actual
@@ -155,30 +160,29 @@ class AnnotationHistory {
       return;
     }
 
+    // Runs on every brush movement, so it must stay cheap: no whole-volume
+    // reads here (getCompleteScalarDataArray copies ~100 MB per call).
     const volume = getSegmentationVolume();
-    const scalarData = volume?.voxelManager?.getCompleteScalarDataArray();
-    if (!scalarData) {
+    const [width, height, depth] = volume?.dimensions || [];
+    const total = width * height * depth;
+    if (!total) {
       return;
     }
 
-    if (!this.lastScalarData || this.lastScalarData.length !== scalarData.length) {
+    if (!this.lastScalarData || this.lastScalarData.length !== total) {
       // First time observing this volume (or it changed size/identity) -
       // nothing to diff against yet, just establish the baseline.
-      this.lastScalarData = new Uint8Array(scalarData);
+      this.lastScalarData = copyLabelmap(volume);
       return;
     }
 
-    // Brush events report exactly which slice(s) they touched - just record
-    // that (a Set add is effectively free) rather than diffing them here.
-    // Inference-run merges (updateView) don't report this, so fall back to
-    // every slice - still deferred the same way, since that only happens
-    // once per Run rather than repeatedly like a drag.
-    const [width, height, depth] = volume.dimensions || [];
-    const sliceLength = width * height;
+    // Edits report exactly which slice(s) they touched - just record that
+    // rather than diffing here. Anything that doesn't falls back to every
+    // slice - still deferred the same way.
     const slices =
       modifiedSlicesToUse && modifiedSlicesToUse.length
         ? modifiedSlicesToUse
-        : Array.from({ length: depth || scalarData.length / sliceLength }, (_, i) => i);
+        : Array.from({ length: depth }, (_, i) => i);
     slices.forEach((sliceIndex) => this.dirtySlices.add(sliceIndex));
 
     // Re-armed on every event, so this only actually fires once the stream
@@ -199,63 +203,86 @@ class AnnotationHistory {
   // via flushPendingChanges), never on every intermediate drag tick.
   private flushDirtySlices = () => {
     this.coalesceTimer = null;
-    const slices = this.dirtySlices;
+    const slices = Array.from(this.dirtySlices).sort((x, y) => x - y);
     this.dirtySlices = new Set();
-    if (!slices.size) {
-      return;
-    }
-
+    const last = this.lastScalarData;
     const volume = getSegmentationVolume();
-    const scalarData = volume?.voxelManager?.getCompleteScalarDataArray();
-    if (!scalarData || !this.lastScalarData || this.lastScalarData.length !== scalarData.length) {
+    if (!slices.length || !volume || !last) {
       return;
     }
-
     const [width, height] = volume.dimensions || [];
     const sliceLength = width * height;
-
-    if (!this.pendingChanges) {
-      this.pendingChanges = new Map();
+    // Live slice arrays (no copy); whole-volume copy only as a fallback.
+    const arrays = sliceArrays(volume);
+    const full = arrays ? null : volume.voxelManager?.getCompleteScalarDataArray();
+    if (!arrays && (!full || full.length !== last.length)) {
+      return;
     }
+    const sliceOf = (z) => (arrays ? arrays[z] : full.subarray(z * sliceLength, (z + 1) * sliceLength));
 
-    for (const sliceIndex of slices) {
-      const begin = sliceIndex * sliceLength;
-      const end = Math.min(begin + sliceLength, scalarData.length);
-      for (let i = begin; i < end; i++) {
-        const newValue = scalarData[i];
-        if (newValue === this.lastScalarData[i]) {
+    // Changed voxels, in growable typed arrays (a Map per voxel was far too
+    // slow and memory-hungry for an AI result changing millions of them).
+    let cap = 4096;
+    let indices = new Uint32Array(cap);
+    let oldValues = new Uint8Array(cap);
+    let newValues = new Uint8Array(cap);
+    let count = 0;
+    let large = false;
+    for (const z of slices) {
+      const now = sliceOf(z);
+      const base = z * sliceLength;
+      for (let j = 0; j < sliceLength; j++) {
+        const v = now[j];
+        if (v === last[base + j]) {
           continue;
         }
-        const existing = this.pendingChanges.get(i);
-        this.pendingChanges.set(i, {
-          oldValue: existing ? existing.oldValue : this.lastScalarData[i],
-          newValue,
-        });
-        this.lastScalarData[i] = newValue;
+        if (count === cap) {
+          if (cap >= LARGE_CHANGE) {
+            large = true;
+            break;
+          }
+          cap *= 2;
+          const i2 = new Uint32Array(cap);
+          i2.set(indices);
+          indices = i2;
+          const o2 = new Uint8Array(cap);
+          o2.set(oldValues);
+          oldValues = o2;
+          const n2 = new Uint8Array(cap);
+          n2.set(newValues);
+          newValues = n2;
+        }
+        indices[count] = base + j;
+        oldValues[count] = last[base + j];
+        newValues[count] = v;
+        count++;
+      }
+      if (large) {
+        break;
       }
     }
 
-    this.commitPendingChanges();
-  };
-
-  private commitPendingChanges = () => {
-    this.coalesceTimer = null;
-    const changes = this.pendingChanges;
-    this.pendingChanges = null;
-    if (!changes || !changes.size) {
+    if (large) {
+      const before = encodeLabelmapBuffer(last);
+      for (const z of slices) {
+        last.set(sliceOf(z), z * sliceLength);
+      }
+      this.undoStack.push({ type: 'volume', before, after: encodeLabelmapBuffer(last) });
+      this.redoStack = [];
       return;
     }
-    const indices = new Uint32Array(changes.size);
-    const oldValues = new Uint8Array(changes.size);
-    const newValues = new Uint8Array(changes.size);
-    let i = 0;
-    for (const [index, { oldValue, newValue }] of changes) {
-      indices[i] = index;
-      oldValues[i] = oldValue;
-      newValues[i] = newValue;
-      i++;
+    if (!count) {
+      return;
     }
-    this.undoStack.push({ type: 'voxels', indices, oldValues, newValues });
+    for (let k = 0; k < count; k++) {
+      last[indices[k]] = newValues[k];
+    }
+    this.undoStack.push({
+      type: 'voxels',
+      indices: indices.slice(0, count),
+      oldValues: oldValues.slice(0, count),
+      newValues: newValues.slice(0, count),
+    });
     this.redoStack = [];
   };
 
@@ -263,7 +290,7 @@ class AnnotationHistory {
   // dirty slices) needs to finalize into its own entry before undo/redo
   // starts touching the stack, so it isn't lost or wrongly bundled with
   // whatever gets undone/redone next. flushDirtySlices already ends by
-  // calling commitPendingChanges itself, so nothing further is needed here.
+  // committing its own entry, so nothing further is needed here.
   private flushPendingChanges() {
     if (this.coalesceTimer) {
       clearTimeout(this.coalesceTimer);
@@ -272,22 +299,52 @@ class AnnotationHistory {
     this.flushDirtySlices();
   }
 
+  // Writes just the entry's voxels into the live slices and redraws just
+  // those slices.
   private applyVoxels = (entry: VoxelsEntry, direction: 'undo' | 'redo') => {
     const volume = getSegmentationVolume();
-    const voxelManager = volume?.voxelManager;
-    const scalarData = voxelManager?.getCompleteScalarDataArray();
-    if (!scalarData) {
+    const arrays = sliceArrays(volume);
+    const values = direction === 'undo' ? entry.oldValues : entry.newValues;
+    if (!arrays) {
+      const scalarData = volume?.voxelManager?.getCompleteScalarDataArray();
+      if (!scalarData) {
+        return;
+      }
+      for (let i = 0; i < entry.indices.length; i++) {
+        scalarData[entry.indices[i]] = values[i];
+      }
+      writeLabelmap(volume, scalarData);
+      this.lastScalarData = new Uint8Array(scalarData);
       return;
     }
-    const values = direction === 'undo' ? entry.oldValues : entry.newValues;
+    const [width, height] = volume.dimensions;
+    const sliceLength = width * height;
+    const touched = new Set<number>();
     for (let i = 0; i < entry.indices.length; i++) {
-      scalarData[entry.indices[i]] = values[i];
+      const index = entry.indices[i];
+      const z = (index / sliceLength) | 0;
+      arrays[z][index - z * sliceLength] = values[i];
+      if (this.lastScalarData) {
+        this.lastScalarData[index] = values[i];
+      }
+      touched.add(z);
     }
-    voxelManager.setCompleteScalarDataArray(scalarData);
-    this.lastScalarData = new Uint8Array(scalarData);
-    triggerEvent(eventTarget, cornerstoneTools.Enums.Events.SEGMENTATION_DATA_MODIFIED, {
-      segmentationId: SEGMENTATION_ID,
-    });
+    notifyModified(volume, Array.from(touched));
+  };
+
+  private applyVolume = (entry: VolumeEntry, direction: 'undo' | 'redo') => {
+    const volume = getSegmentationVolume();
+    if (!volume) {
+      return;
+    }
+    const [width, height, depth] = volume.dimensions;
+    const { data } = decodeLabelmap(
+      direction === 'undo' ? entry.before : entry.after,
+      width * height * depth,
+      IDENTITY_LUT
+    );
+    writeLabelmap(volume, data);
+    this.lastScalarData = data;
   };
 
   private apply = (entry: HistoryEntry, direction: 'undo' | 'redo') => {
@@ -295,6 +352,8 @@ class AnnotationHistory {
     try {
       if (entry.type === 'voxels') {
         this.applyVoxels(entry, direction);
+      } else if (entry.type === 'volume') {
+        this.applyVolume(entry, direction);
       } else {
         // undoing an 'add' removes it; undoing a 'remove' restores it -
         // and vice-versa for redo.
@@ -350,11 +409,51 @@ class AnnotationHistory {
   // clears it.
   resetBaseline = () => {
     this.flushPendingChanges();
-    const volume = getSegmentationVolume();
-    const scalarData = volume?.voxelManager?.getCompleteScalarDataArray();
-    this.lastScalarData = scalarData ? new Uint8Array(scalarData) : null;
+    this.lastScalarData = copyLabelmap(getSegmentationVolume());
     this.undoStack = [];
     this.redoStack = [];
+  };
+
+  // Replacing the whole labelmap at once (a loaded save, an AI result): the
+  // caller already holds the new state, so there's nothing to discover by
+  // diffing ~100 million voxels - writes go through with tracking off, and
+  // `data` (owned by the history from now on - don't modify it) becomes the
+  // new baseline directly.
+  private replaceWith(write: () => void, data: Uint8Array) {
+    this.flushPendingChanges(); // a brush stroke still settling becomes its own entry first
+    this.suppressTracking = true;
+    try {
+      write();
+    } finally {
+      this.suppressTracking = false;
+    }
+    if (this.coalesceTimer) {
+      clearTimeout(this.coalesceTimer);
+      this.coalesceTimer = null;
+    }
+    this.dirtySlices = new Set();
+    this.lastScalarData = data;
+  }
+
+  // A wholesale state install that isn't a user edit (e.g. loading a saved
+  // segmentation): becomes the fresh baseline, with no undo step back past it
+  // (see resetBaseline).
+  installState = (write: () => void, data: Uint8Array) => {
+    this.replaceWith(write, data);
+    this.undoStack = [];
+    this.redoStack = [];
+  };
+
+  // A whole-volume edit that should be undoable (a full AI result): recorded
+  // as one compact run-length entry, before -> after.
+  recordReplace = (write: () => void, data: Uint8Array) => {
+    this.flushPendingChanges();
+    const before = this.lastScalarData ? encodeLabelmapBuffer(this.lastScalarData) : null;
+    this.replaceWith(write, data);
+    if (before) {
+      this.undoStack.push({ type: 'volume', before, after: encodeLabelmapBuffer(data) });
+      this.redoStack = [];
+    }
   };
 
   clearAll = () => {

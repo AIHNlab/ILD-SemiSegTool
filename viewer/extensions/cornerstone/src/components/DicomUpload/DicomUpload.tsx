@@ -14,13 +14,29 @@ type DicomUploadProps = {
   onStarted: () => void;
 };
 
+// Files a DICOM folder often contains that are certainly not DICOM images
+// (macOS/Windows housekeeping files, DICOMDIR indexes, reports, previews).
+// Dropped before upload, so they don't show up as failed uploads.
+const NOT_DICOM_NAMES = new Set(['dicomdir', 'thumbs.db', 'desktop.ini', 'icon\r']);
+const NOT_DICOM_EXTENSIONS =
+  /\.(txt|xml|html?|pdf|jpe?g|png|gif|bmp|tiff?|json|csv|ini|inf|exe|bat|sh|zip|7z|rar|doc|docx|xls|xlsx|md|log|db|lnk|url|plist)$/i;
+
+function isClearlyNotDicom(file: File): boolean {
+  const name = (file.name || '').toLowerCase();
+  return name.startsWith('.') || NOT_DICOM_NAMES.has(name) || NOT_DICOM_EXTENSIONS.test(name);
+}
+
 function DicomUpload({ dataSource, onComplete, onStarted }: DicomUploadProps): ReactElement {
   const baseClassNames = 'min-h-[480px] flex flex-col bg-black select-none';
   const [dicomFileUploaderArr, setDicomFileUploaderArr] = useState([]);
 
   const onDrop = useCallback(async acceptedFiles => {
     onStarted();
-    setDicomFileUploaderArr(acceptedFiles.map(file => new DicomFileUploader(file, dataSource)));
+    setDicomFileUploaderArr(
+      acceptedFiles
+        .filter(file => !isClearlyNotDicom(file))
+        .map(file => new DicomFileUploader(file, dataSource))
+    );
   }, []);
 
   const getDropZoneComponent = (): ReactElement => {
