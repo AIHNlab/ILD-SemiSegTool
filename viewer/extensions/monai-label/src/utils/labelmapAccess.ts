@@ -157,6 +157,19 @@ const isUntaggedSurfaceActor = (entry) =>
   !entry.actor?.isA?.('vtkVolume') &&
   entry.actor?.getMapper?.()?.getInputData?.()?.getPolys;
 
+// Removes 3D surface actors from a 2D viewport (left there when a 3D surface
+// representation was put on it; see MonaiLabelPanel.restoreSegmentationOnViewports).
+export function removeSurfaceActors(viewport) {
+  const uids = (viewport?.getActors?.() || [])
+    .filter((entry) => isUntaggedSurfaceActor(entry) || entry.representationUID?.startsWith(SURFACE_UID_PREFIX))
+    .map((entry) => entry.uid);
+  if (uids.length) {
+    viewport.removeActors(uids);
+    viewport.render?.();
+  }
+  return uids.length;
+}
+
 function volume3dViewports(): any[] {
   const viewports = [];
   for (const engine of getRenderingEngines() || []) {

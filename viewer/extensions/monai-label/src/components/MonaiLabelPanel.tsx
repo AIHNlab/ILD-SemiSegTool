@@ -25,9 +25,10 @@ import MonaiLabelClient from '../services/MonaiLabelClient';
 import { hideNotification, getLabelColor, describeError } from '../utils/GenericUtils';
 import { Enums } from '@cornerstonejs/tools';
 import { cache } from '@cornerstonejs/core';
+import * as cornerstone from '@cornerstonejs/core';
 import SegmentationReader from '../utils/SegmentationReader';
 import { compressIfSupported, decodeLabelmap, encodeLabelmap, isRle } from '../utils/labelmapRle';
-import { copyLabelmap, notifyModified, sliceArrays, writeLabelmap } from '../utils/labelmapAccess';
+import { copyLabelmap, notifyModified, removeSurfaceActors, sliceArrays, writeLabelmap } from '../utils/labelmapAccess';
 import annotationHistory from '../utils/AnnotationHistory';
 import { currentSegmentsInfo } from '../utils/SegUtils';
 import SettingsTable from './SettingsTable';
@@ -318,6 +319,7 @@ export default class MonaiLabelPanel extends Component<any, any> {
     if (!this.segmentationCreation) {
       const segmentations = this.segmentationsSpec;
       this.segmentationCreation = (async () => {
+        this.knownFrameOfReference = null; // a new segmentation, maybe of another scan
         const nid = `segprep-${Date.now()}`;
         this.notification.show({ id: nid, title: 'MONAI Label', message: 'Preparing the segmentation layer...', type: 'loading' });
         await new Promise((resolve) => setTimeout(resolve, 50)); // let the toast paint first
@@ -344,6 +346,7 @@ export default class MonaiLabelPanel extends Component<any, any> {
             }
           };
           applyColors();
+          this.segmentationFrameOfReference(); // remember its scan (see restoreSegmentationOnViewports)
           // Again shortly after, in case the representation was still settling
           // on the viewport (the old connect code waited a second for this).
           setTimeout(() => {
@@ -615,6 +618,7 @@ export default class MonaiLabelPanel extends Component<any, any> {
 
   async componentDidMount() {
     this.watchViewports();
+    (window as any).ildSegState = () => console.info(this.describeSegmentationState());
     if (this.state.isDataReady) {
       return;
     }
@@ -641,13 +645,88 @@ export default class MonaiLabelPanel extends Component<any, any> {
     const { cornerstoneViewportService, viewportGridService } = this.props.servicesManager.services;
     const later = () => {
       clearTimeout(this.restoreTimer);
-      this.restoreTimer = setTimeout(() => this.restoreSegmentationOnViewports(), 300);
+      // Twice: OHIF may still be rebuilding the viewports at the first try.
+      this.restoreTimer = setTimeout(async () => {
+        await this.restoreSegmentationOnViewports();
+        this.restoreTimer = setTimeout(() => this.restoreSegmentationOnViewports(), 1200);
+      }, 300);
     };
     this.viewportSubscriptions = [
       cornerstoneViewportService?.subscribe?.(cornerstoneViewportService.EVENTS.VIEWPORT_DATA_CHANGED, later),
       viewportGridService?.subscribe?.(viewportGridService.EVENTS.LAYOUT_CHANGED, later),
       viewportGridService?.subscribe?.(viewportGridService.EVENTS.GRID_STATE_CHANGED, later),
     ].filter(Boolean);
+  };
+
+  // The frame of reference (scan) of segmentation "1". OHIF removes it from a
+  // viewport when that viewport is destroyed (layout change), so remember it
+  // while some viewport still shows it; else read it from the images.
+  private knownFrameOfReference: string | null = null;
+  segmentationFrameOfReference = () => {
+    const { segmentationService, cornerstoneViewportService } = this.props.servicesManager.services;
+    for (const id of segmentationService.getViewportIdsWithSegmentation('1') || []) {
+      const viewport = cornerstoneViewportService.getCornerstoneViewport(id);
+      const frameOfReference = viewport?.type !== 'volume3d' && viewport?.getFrameOfReferenceUID?.();
+      if (frameOfReference) {
+        this.knownFrameOfReference = frameOfReference;
+        return frameOfReference;
+      }
+    }
+    if (this.knownFrameOfReference) {
+      return this.knownFrameOfReference;
+    }
+    const volume = this.labelmapVolume();
+    const imageIds = volume?.imageIds || [];
+    const image = imageIds.length ? cache.getImage(imageIds[0]) : null;
+    const candidates = [
+      volume?.metadata?.FrameOfReferenceUID,
+      image?.referencedImageId &&
+        cornerstone.metaData.get('imagePlaneModule', image.referencedImageId)?.frameOfReferenceUID,
+      imageIds[0] && cornerstone.metaData.get('imagePlaneModule', imageIds[0])?.frameOfReferenceUID,
+    ];
+    return candidates.find(Boolean) || null;
+  };
+
+  // One line describing segmentation "1" and every viewport - for debugging,
+  // type ildSegState() in the browser console.
+  describeSegmentationState = () => {
+    const { segmentationService, cornerstoneViewportService, viewportGridService } =
+      this.props.servicesManager.services;
+    const out: any = {};
+    try {
+      const seg = segmentationService.getSegmentation('1');
+      out.segmentation = !!seg;
+      out.representationData = seg ? Object.keys(seg.representationData || {}) : [];
+      let volume = null;
+      try {
+        volume = this.labelmapVolume();
+      } catch (e) {
+        out.volumeError = String(e);
+      }
+      out.volumeId = volume?.volumeId || null;
+      out.volumeInCache = !!(volume?.volumeId && cache.getVolume(volume.volumeId));
+      out.frameOfReference = this.segmentationFrameOfReference();
+      out.viewportsWithSegmentation = seg ? segmentationService.getViewportIdsWithSegmentation('1') : [];
+      out.viewports = Array.from(viewportGridService.getState().viewports.keys()).map((id: string) => {
+        const viewport = cornerstoneViewportService.getCornerstoneViewport(id) as any;
+        let reps = [];
+        try {
+          reps = seg ? segmentationService.getSegmentationRepresentations(id, { segmentationId: '1' }) || [] : [];
+        } catch (e) {
+          reps = [String(e)];
+        }
+        return {
+          id,
+          type: viewport?.type || 'none',
+          frameOfReference: viewport?.getFrameOfReferenceUID?.() || null,
+          representations: reps.map((r) => (typeof r === 'string' ? r : `${r.type}${r.visible === false ? ' (hidden)' : ''}${r.active ? ' active' : ''}`)),
+          actors: (viewport?.getActors?.() || []).map((a) => a.representationUID || a.referencedId || a.uid),
+        };
+      });
+    } catch (e) {
+      out.error = String(e);
+    }
+    return JSON.stringify(out);
   };
 
   restoreSegmentationOnViewports = async () => {
@@ -657,14 +736,10 @@ export default class MonaiLabelPanel extends Component<any, any> {
       if (!segmentationService.getSegmentation('1')) {
         return;
       }
-      // The scan it belongs to: the labelmap's frame of reference, else that
-      // of a viewport still showing it.
       const viewportIds = Array.from(viewportGridService.getState().viewports.keys()) as string[];
-      let frameOfReference = this.labelmapVolume()?.metadata?.FrameOfReferenceUID;
-      for (const id of segmentationService.getViewportIdsWithSegmentation('1') || []) {
-        frameOfReference ||= cornerstoneViewportService.getCornerstoneViewport(id)?.getFrameOfReferenceUID?.();
-      }
+      const frameOfReference = this.segmentationFrameOfReference();
       if (!frameOfReference) {
+        console.warn('Segmentation: could not tell which scan it belongs to - not re-adding it to the viewports');
         return;
       }
       for (const viewportId of viewportIds) {
@@ -675,13 +750,26 @@ export default class MonaiLabelPanel extends Component<any, any> {
         if (viewport.getFrameOfReferenceUID?.() !== frameOfReference) {
           continue; // a different scan
         }
-        if (segmentationService.getSegmentationRepresentations(viewportId, { segmentationId: '1' })?.length) {
+        const types = (segmentationService.getSegmentationRepresentations(viewportId, { segmentationId: '1' }) || [])
+          .map((r) => r.type);
+        // Back from the 3D layout, OHIF puts the 3D surface representation on
+        // the 2D viewports (same saved presentation) - which they can't show.
+        // Swap it for the labelmap.
+        if (types.includes(Enums.SegmentationRepresentations.Surface)) {
+          segmentationService.removeSegmentationRepresentations(viewportId, {
+            segmentationId: '1',
+            type: Enums.SegmentationRepresentations.Surface,
+          });
+          removeSurfaceActors(viewport);
+        }
+        if (types.includes(Enums.SegmentationRepresentations.Labelmap)) {
           continue;
         }
         await segmentationService.addSegmentationRepresentation(viewportId, {
           segmentationId: '1',
           type: Enums.SegmentationRepresentations.Labelmap,
         });
+        console.info(`Segmentation shown again on viewport ${viewportId}`);
       }
     } catch (e) {
       console.warn('Could not show the segmentation on all viewports', e);
