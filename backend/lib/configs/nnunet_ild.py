@@ -21,7 +21,7 @@ class NNUNetILD(TaskConfig):
             "emphysema":        [156,  39, 176],   # purple
         }
         self.model_folder = os.path.join(
-            model_dir, "nnUNet_results/Dataset003_ILD_raw/nnUNetTrainer__nnUNetPlans__3d_fullres")
+            model_dir, "nnUNet_weights/ILD_raw")
 
     def infer(self) -> dict:
         return {self.name: NNUNet(self.model_folder, labels=self.labels,

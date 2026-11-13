@@ -17,6 +17,9 @@ const Toaster = ({ ...props }: ToasterProps) => {
       }}
       theme="dark"
       richColors="true"
+      // An × on every notification, so it can be closed before it times out
+      // (and long-lived ones, e.g. errors, at all).
+      closeButton
       // Widen the toaster itself (sonner's --width, default 356px). Setting only
       // the toast's width made it overflow the right-anchored container, so the
       // end of longer messages was cut off at the screen edge.

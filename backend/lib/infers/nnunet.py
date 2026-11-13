@@ -14,9 +14,50 @@ XY_MIN_SIZE = 96
 # never actually looked at as "genuinely decided background" there.
 Z_MIN_SIZE = 64
 
+def _trainer_class(trainer_name):
+    """The nnU-Net trainer class a checkpoint names - only its
+    build_network_architecture is used. Falls back to the standard trainer
+    for custom ones that aren't installed (the airways model's
+    nnUNetTrainerSkeletonRecall only changes the training loss)."""
+    from nnunetv2.utilities.find_objects import recursive_find_trainer_class_by_name
+
+    try:
+        return recursive_find_trainer_class_by_name(trainer_name)
+    except RuntimeError:
+        from nnunetv2.training.nnUNetTrainer.nnUNetTrainer import nnUNetTrainer
+        print(f"nnU-Net trainer {trainer_name} not installed - building the network with nnUNetTrainer")
+        return nnUNetTrainer
+
+
+def _load_model(predictor, model_folder, checkpoint="checkpoint_best.pth"):
+    """Sets up `predictor` from a model folder laid out like the Hugging Face
+    release (backend/model/nnUNet_weights/<Model>/): plans.json, dataset.json
+    and the checkpoint side by side - nnU-Net's own loader wants the
+    checkpoint in a fold_<n>/ subfolder. Otherwise the same steps as
+    nnUNetPredictor.initialize_from_trained_model_folder."""
+    from batchgenerators.utilities.file_and_folder_operations import load_json
+    from nnunetv2.utilities.label_handling.label_handling import determine_num_input_channels
+    from nnunetv2.utilities.plans_handling.plans_handler import PlansManager
+
+    dataset_json = load_json(os.path.join(model_folder, "dataset.json"))
+    plans_manager = PlansManager(load_json(os.path.join(model_folder, "plans.json")))
+    ckpt = torch.load(os.path.join(model_folder, checkpoint), map_location="cpu", weights_only=False)
+    trainer_name = ckpt["trainer_name"]
+    configuration_manager = plans_manager.get_configuration(ckpt["init_args"]["configuration"])
+    network = _trainer_class(trainer_name).build_network_architecture(
+        plans_manager, configuration_manager,
+        determine_num_input_channels(plans_manager, configuration_manager, dataset_json),
+        plans_manager.get_label_manager(dataset_json).num_segmentation_heads,
+        enable_deep_supervision=False)
+    network.load_state_dict(ckpt["network_weights"])
+    predictor.manual_initialization(
+        network, plans_manager, configuration_manager, [ckpt["network_weights"]],
+        dataset_json, trainer_name, ckpt.get("inference_allowed_mirroring_axes"))
+
+
 class NNUNet(BasicInferTask):
-    def __init__(self, model_folder, labels, label_colors=None, folds=(0,),
-                 checkpoint="checkpoint_final.pth", **kwargs):
+    def __init__(self, model_folder, labels, label_colors=None,
+                 checkpoint="checkpoint_best.pth", **kwargs):
         super().__init__(path=None, network=None, type="segmentation",
                          labels=labels, dimension=3,
                          description="nnU-Net v2 auto-segmentation", **kwargs)
@@ -31,8 +72,7 @@ class NNUNet(BasicInferTask):
         self.predictor = nnUNetPredictor(
             tile_step_size=0.5, use_gaussian=True, use_mirroring=on_gpu,
             device=device)
-        self.predictor.initialize_from_trained_model_folder(
-            model_folder, use_folds=folds, checkpoint_name=checkpoint)
+        _load_model(self.predictor, model_folder, checkpoint)
 
     def is_valid(self) -> bool:
         return True

@@ -74,9 +74,8 @@ services:
       - ../backend/bin:/app/backend/bin:ro
       - ../preprocessing:/app/preprocessing:ro
       # Model weights, always from the repo's backend/model/ (see README "Model
-      # weights"): nnUNet_results/ and sam2/checkpoint_ild.pt. Writable: the
-      # airways model unpacks its checkpoint into a model folder on first start.
-      - ../backend/model:/app/backend/model
+      # weights"): nnUNet_weights/ and MedSAM2+nnUNet_weights/, as on Hugging Face.
+      - ../backend/model:/app/backend/model:ro
       - ${DATA_DIR:-./data}/monailabel:/data
       - ${DATA_DIR:-./data}/monailabel/logs:/app/backend/logs
     # nnU-Net hands the CT volume between its worker processes through shared

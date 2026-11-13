@@ -20,7 +20,7 @@ class SAM2ILD(TaskConfig):
             "bronchiectasis":   [ 33, 150, 243],   # blue
             "emphysema":        [156,  39, 176],   # purple
         }
-        self.checkpoint_path = os.path.join(model_dir, "sam2/checkpoint_ild.pt")
+        self.checkpoint_path = os.path.join(model_dir, "MedSAM2+nnUNet_weights/checkpoint_best_val.pt")
 
     def infer(self) -> dict:
         if not os.path.exists(self.checkpoint_path):

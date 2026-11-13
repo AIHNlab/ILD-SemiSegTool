@@ -359,53 +359,69 @@ clean_up() {
 # container as /app/backend/model) for the models in MODELS, so a missing file is
 # reported with its real path instead of the AI backend failing on a path inside
 # its container. Suggests a fix for common mix-ups; returns 1 if anything is missing.
-MODEL_DIR=../backend/model
-check_models() {
-  local r="$MODEL_DIR/nnUNet_results" sam="$MODEL_DIR/sam2/checkpoint_ild.pt" models n=0 d f
-  models=",$(env_get MODELS),"
-  bad() { n=$((n + 1)); echo "  - $*"; }
-  nn() { # model, dataset folder
-    case "$models" in *",$1,"*) ;; *) return 0 ;; esac
-    d="$r/$2/nnUNetTrainer__nnUNetPlans__3d_fullres"
-    for f in plans.json dataset.json fold_0/checkpoint_final.pth; do
-      [ -f "$d/$f" ] || bad "$1: missing backend/model/nnUNet_results/$2/nnUNetTrainer__nnUNetPlans__3d_fullres/$f"
-    done
-  }
-  case "$models" in *,nnunet_*)
-    # A link pointing outside backend/model can't be followed inside the container.
-    if [ -L "$r" ]; then
-      bad "backend/model/nnUNet_results is a link (to $(readlink "$r")) - the container can't follow it; move the folder itself here"
-    fi
-    nn nnunet_lung Dataset001_Lung
-    nn nnunet_ild Dataset003_ILD_raw
-    case "$models" in *,nnunet_airways,*)
-      [ -f "$r/Dataset005_Airways/airways.pth" ] || bad "nnunet_airways: missing backend/model/nnUNet_results/Dataset005_Airways/airways.pth" ;;
+# Model weights, laid out exactly like the Hugging Face release (HF_SUBDIR of
+# HF_REPO), one file per model listed in MODELS:
+#   model name      files under backend/model/
+model_files() {
+  local models=",$(env_get MODELS)," m
+  for m in nnunet_lung:Lung nnunet_ild:ILD_raw nnunet_airways:Airways; do
+    case "$models" in *",${m%%:*},"*)
+      for f in plans.json dataset.json checkpoint_best.pth; do echo "${m%%:*} nnUNet_weights/${m#*:}/$f"; done ;;
     esac
-    if [ "$n" -gt 0 ] && [ ! -L "$r" ]; then
-      if d=$(find "$MODEL_DIR" -mindepth 1 -maxdepth 4 -type d -name 'Dataset00[0-9]_*' 2>/dev/null | head -n 1) && [ -n "$d" ] && [ "$(dirname "$d")" != "$r" ]; then
-        echo "    -> the Dataset folders are in $(dirname "$d") - move them into backend/model/nnUNet_results/"
-      fi
-    fi ;;
-  esac
-  case "$models" in *,sam2_ild,*)
-    if [ -L "$sam" ]; then
-      bad "backend/model/sam2/checkpoint_ild.pt is a link (to $(readlink "$sam")) - put the file itself there"
-    elif [ ! -f "$sam" ]; then
-      bad "sam2_ild: missing backend/model/sam2/checkpoint_ild.pt (the MedSAM2 checkpoint, renamed to this)"
-      if d=$(ls "$MODEL_DIR"/sam2/*.pt 2>/dev/null | head -n 1) && [ -n "$d" ]; then
-        echo "    -> found $d - rename it: mv \"$d\" $sam"
-      fi
-    fi ;;
-  esac
+  done
+  case "$models" in *,sam2_ild,*) echo "sam2_ild MedSAM2+nnUNet_weights/checkpoint_best_val.pt" ;; esac
+}
+
+# Downloads the missing ones from Hugging Face (plain curl, so it works before
+# anything is built; resumes an interrupted download). Files already there are
+# never replaced. HF_TOKEN in .env is only needed if the repo is private.
+fetch_models() {
+  local base token n=0 failed=0 model f
+  command -v curl >/dev/null 2>&1 || die "curl is needed to download the model weights - install it (e.g. sudo apt install curl)"
+  base="https://huggingface.co/$(env_get HF_REPO AIHNLab/ILD-SemiSegTool)/resolve/main/$(env_get HF_SUBDIR HuggingFace)"
+  token=$(env_get HF_TOKEN)
+  echo "Downloading missing model weights from $base ..."
+  while read -r model f; do
+    [ -s "$MODEL_DIR/$f" ] && continue
+    mkdir -p "$(dirname "$MODEL_DIR/$f")"
+    echo "  $f"
+    if curl -fL --retry 3 -C - --progress-bar ${token:+-H "Authorization: Bearer $token"} \
+      -o "$MODEL_DIR/$f.part" "$base/$(echo "$f" | sed 's/+/%2B/g')"; then
+      mv "$MODEL_DIR/$f.part" "$MODEL_DIR/$f"; n=$((n + 1))
+    else
+      echo "  !! download failed: $base/$f"; failed=1
+    fi
+  done <<EOF2
+$(model_files)
+EOF2
+  echo "Downloaded $n file(s)."
+  return "$failed"
+}
+
+MODEL_DIR=../backend/model
+# Checks backend/model/ (mounted into the AI container as /app/backend/model)
+# has every file of the models in MODELS; returns 1 if anything is missing.
+check_models() {
+  local n=0 model f
+  while read -r model f; do
+    [ -n "$f" ] || continue
+    if [ -L "$MODEL_DIR/$f" ]; then
+      n=$((n + 1)); echo "  - $model: backend/model/$f is a link - the container can't follow it; put the file itself there"
+    elif [ ! -s "$MODEL_DIR/$f" ]; then
+      n=$((n + 1)); echo "  - $model: missing backend/model/$f"
+    fi
+  done <<EOF2
+$(model_files)
+EOF2
   [ "$n" -eq 0 ] && { echo "Model weights: OK ($(env_get MODELS))"; return 0; }
   cat <<'EOF'
-  Expected in the repo's backend/model/ folder:
-    nnUNet_results/
-      Dataset001_Lung/nnUNetTrainer__nnUNetPlans__3d_fullres/     (nnunet_lung)
-      Dataset003_ILD_raw/nnUNetTrainer__nnUNetPlans__3d_fullres/  (nnunet_ild)
-          plans.json  dataset.json  fold_0/checkpoint_final.pth
-      Dataset005_Airways/airways.pth                               (nnunet_airways)
-    sam2/checkpoint_ild.pt                                         (sam2_ild)
+  Expected in the repo's backend/model/ folder - the same layout as the
+  Hugging Face release (./manage.sh fetch-models downloads what's missing):
+    nnUNet_weights/Lung/                       (nnunet_lung)
+    nnUNet_weights/ILD_raw/                    (nnunet_ild)
+    nnUNet_weights/Airways/                    (nnunet_airways)
+        plans.json  dataset.json  checkpoint_best.pth
+    MedSAM2+nnUNet_weights/checkpoint_best_val.pt   (sam2_ild)
   Copy the weights there, or remove models you don't have from MODELS= in .env.
 EOF
   return 1
@@ -497,7 +513,10 @@ case "$cmd" in
     choose_engine
     QUIET_GPU_HINT=1 resolve_gpu
     echo; gpu_report || true; echo
-    check_models || echo "(Put the model weights in backend/model/ before ./manage.sh up.)"; echo
+    if ! check_models >/dev/null; then
+      fetch_models || true
+    fi
+    check_models || echo "(Fix the weights in backend/model/ before ./manage.sh up - ./manage.sh fetch-models retries the download.)"; echo
     echo "Next: ./manage.sh build, then ./manage.sh add-user <name> --admin, then ./manage.sh up"
     ;;
   clean)
@@ -506,6 +525,9 @@ case "$cmd" in
   check-models)
     need_env; check_models || exit 1
     ;;
+  fetch-models)
+    need_env; fetch_models && check_models || exit 1
+    ;;
   check-gpu)
     gpu_report || true
     ;;
@@ -513,7 +535,11 @@ case "$cmd" in
     need_env; resolve_gpu; compose build "$@"
     ;;
   up | start)
-    need_env; echo "Checking model weights..."; check_models || die "model weights missing - see above (nothing was started)"
+    need_env; echo "Checking model weights..."
+    if ! check_models; then
+      echo "Fetching the missing weights from Hugging Face..."
+      fetch_models && check_models || die "model weights missing - see above (nothing was started)"
+    fi
     resolve_gpu; generate_users; compose up -d --remove-orphans
     podman_boot
     clean_up
@@ -656,6 +682,7 @@ Users
 Monitoring
   status                    containers + GPU (or CPU) use at a glance
   check-models              are the model weights in backend/model/ complete?
+  fetch-models              download missing model weights from Hugging Face (also done by init/up)
   check-gpu                 is the NVIDIA GPU usable? if not, what to install
   logs [SERVICE]            follow logs (gateway, login, monailabel, orthanc-NAME)
   progress                  watch AI runs live, with progress bars

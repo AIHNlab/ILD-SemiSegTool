@@ -199,22 +199,24 @@ Accounts, monitoring, backups and troubleshooting are covered in
 ## Model weights
 
 The weights always go in the repo's **`backend/model/`** folder (not tracked
-by git - copy them there after cloning, before `./manage.sh up`):
+by git), in the same layout as their release on Hugging Face
+([AIHNLab/ILD-SemiSegTool](https://huggingface.co/AIHNLab/ILD-SemiSegTool),
+folder `HuggingFace/`). `./manage.sh init` (and `up`) downloads any that are
+missing (~1.2 GB, needs `curl`); `./manage.sh fetch-models` retries an
+interrupted download. Files already there are never replaced.
 
 ```
 backend/model/
-├── nnUNet_results/
-│   ├── Dataset001_Lung/nnUNetTrainer__nnUNetPlans__3d_fullres/      nnunet_lung
-│   ├── Dataset003_ILD_raw/nnUNetTrainer__nnUNetPlans__3d_fullres/   nnunet_ild
-│   │       (each: plans.json, dataset.json, fold_0/checkpoint_final.pth)
-│   └── Dataset005_Airways/airways.pth                                nnunet_airways
-└── sam2/
-    └── checkpoint_ild.pt                                             sam2_ild
+├── nnUNet_weights/
+│   ├── Lung/          plans.json, dataset.json, checkpoint_best.pth   nnunet_lung
+│   ├── ILD_raw/       plans.json, dataset.json, checkpoint_best.pth   nnunet_ild
+│   └── Airways/       plans.json, dataset.json, checkpoint_best.pth   nnunet_airways
+└── MedSAM2+nnUNet_weights/
+    └── checkpoint_best_val.pt                                          sam2_ild
 ```
 
-`checkpoint_ild.pt` is the fine-tuned MedSAM2 checkpoint (released as
-`checkpoint_best_val.pt` - rename it). Copy the real files, not links: a link
-pointing outside `backend/model/` can't be followed inside the container.
+To add them by hand, copy the files themselves, not links: a link pointing
+outside `backend/model/` can't be followed inside the container.
 
 `./manage.sh check-models` lists anything missing, with its full path (`init`
 and `up` run it too; `up` won't start without the weights). To load fewer

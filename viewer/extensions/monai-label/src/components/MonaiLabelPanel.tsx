@@ -308,7 +308,11 @@ export default class MonaiLabelPanel extends Component<any, any> {
   // to call any number of times; concurrent callers share one creation.
   ensureSegmentation = async () => {
     const { segmentationService } = this.props.servicesManager.services;
-    if (segmentationService.getSegmentation('1') || !this.segmentationsSpec) {
+    if (segmentationService.getSegmentation('1')) {
+      await this.restoreSegmentationOnViewports(); // e.g. after the 3D layout
+      return;
+    }
+    if (!this.segmentationsSpec) {
       return;
     }
     if (!this.segmentationCreation) {
@@ -610,6 +614,7 @@ export default class MonaiLabelPanel extends Component<any, any> {
   };
 
   async componentDidMount() {
+    this.watchViewports();
     if (this.state.isDataReady) {
       return;
     }
@@ -617,6 +622,71 @@ export default class MonaiLabelPanel extends Component<any, any> {
     console.log('(Component Mounted) Ready to Connect to MONAI Server...');
     // await this.onInfo();
   }
+
+  componentWillUnmount() {
+    this.viewportSubscriptions.forEach((s) => s?.unsubscribe?.());
+    this.viewportSubscriptions = [];
+    clearTimeout(this.restoreTimer);
+  }
+
+  // Switching layouts (e.g. 3D and back to 2D) rebuilds the viewports, and
+  // OHIF only puts a segmentation back on a new viewport that is the same
+  // kind as one it was shown on before - so after 3D the 2D viewports came
+  // back without it (and Load/AI results then wrote into a layer nothing
+  // showed). Whenever the viewports change, show it again on every 2D
+  // viewport of the same scan.
+  private viewportSubscriptions = [];
+  private restoreTimer = null;
+  watchViewports = () => {
+    const { cornerstoneViewportService, viewportGridService } = this.props.servicesManager.services;
+    const later = () => {
+      clearTimeout(this.restoreTimer);
+      this.restoreTimer = setTimeout(() => this.restoreSegmentationOnViewports(), 300);
+    };
+    this.viewportSubscriptions = [
+      cornerstoneViewportService?.subscribe?.(cornerstoneViewportService.EVENTS.VIEWPORT_DATA_CHANGED, later),
+      viewportGridService?.subscribe?.(viewportGridService.EVENTS.LAYOUT_CHANGED, later),
+      viewportGridService?.subscribe?.(viewportGridService.EVENTS.GRID_STATE_CHANGED, later),
+    ].filter(Boolean);
+  };
+
+  restoreSegmentationOnViewports = async () => {
+    const { segmentationService, cornerstoneViewportService, viewportGridService } =
+      this.props.servicesManager.services;
+    try {
+      if (!segmentationService.getSegmentation('1')) {
+        return;
+      }
+      // The scan it belongs to: the labelmap's frame of reference, else that
+      // of a viewport still showing it.
+      const viewportIds = Array.from(viewportGridService.getState().viewports.keys()) as string[];
+      let frameOfReference = this.labelmapVolume()?.metadata?.FrameOfReferenceUID;
+      for (const id of segmentationService.getViewportIdsWithSegmentation('1') || []) {
+        frameOfReference ||= cornerstoneViewportService.getCornerstoneViewport(id)?.getFrameOfReferenceUID?.();
+      }
+      if (!frameOfReference) {
+        return;
+      }
+      for (const viewportId of viewportIds) {
+        const viewport = cornerstoneViewportService.getCornerstoneViewport(viewportId);
+        if (!viewport || viewport.type === 'volume3d') {
+          continue; // not rendered yet, or 3D (shows surfaces, added by OHIF)
+        }
+        if (viewport.getFrameOfReferenceUID?.() !== frameOfReference) {
+          continue; // a different scan
+        }
+        if (segmentationService.getSegmentationRepresentations(viewportId, { segmentationId: '1' })?.length) {
+          continue;
+        }
+        await segmentationService.addSegmentationRepresentation(viewportId, {
+          segmentationId: '1',
+          type: Enums.SegmentationRepresentations.Labelmap,
+        });
+      }
+    } catch (e) {
+      console.warn('Could not show the segmentation on all viewports', e);
+    }
+  };
 
   onOptionsConfig = () => {
     return this.state.options;
