@@ -176,16 +176,23 @@ function boundsOf(points) {
   };
 }
 
+// For now Semi-Segmentation offers only these models (if the server has
+// them). Empty the list to offer every prompt-capable model again.
+const SEMI_SEGMENTATION_MODELS = ['sam2_ild'];
+
 function getModels(info) {
-  // Both prompt-driven models belong here: 'deepgrow' (SAM2 - genuine
+  // Both prompt-driven models can work here: 'deepgrow' (SAM2 - genuine
   // object-mask tracing, single class per run) and 'segmentation' (nnU-Net -
   // classifies the prompted region into all classes at once). Same
   // type-based filtering AutoSegmentation.tsx uses for its own list.
-  return Object.keys(info.data.models).filter(
+  const all = Object.keys(info.data.models).filter(
     (m) =>
       info.data.models[m].type === 'deepgrow' ||
       info.data.models[m].type === 'segmentation'
   );
+  const chosen = all.filter((m) => SEMI_SEGMENTATION_MODELS.includes(m));
+  // Never leave the tab without a model if the server lacks the chosen ones.
+  return SEMI_SEGMENTATION_MODELS.length && chosen.length ? chosen : all;
 }
 
 function isSam2Model(info, model) {

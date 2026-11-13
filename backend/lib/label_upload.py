@@ -91,6 +91,79 @@ def saved_label_rle(path: str) -> Tuple[bytes, Dict[str, Any]]:
     return encode_rle(data.ravel(order="F")), {"sizes": [int(s) for s in data.shape], "keys": keys}
 
 
+def merge_saved_labels(paths, top: int = -1) -> Tuple[bytes, Dict[str, Any]]:
+    """Several saved .nrrd files of one image layered into one segmentation,
+    as (run-length bytes, {sizes, keys}) like saved_label_rle.
+
+    Layered by size, independent of the order given: the save labelling the
+    most voxels goes underneath, smaller ones on top (each writes only its
+    labelled voxels). So the broad mask (lung) ends up below the detail drawn
+    inside it (ILD classes), and small structures (airways) on top. `top` (an
+    index into paths) puts that save on top instead - the viewer's "Merged
+    layers" switch; meta["top"] says which index ended up on top. Classes
+    are matched by name across saves (each save numbers its classes its own
+    way); each keeps its number where that's free, otherwise gets the next
+    free one. The merged class list goes into keys["classes"], so the viewer
+    remaps it by name like any loaded save.
+    """
+    import nrrd
+
+    merged = None
+    sizes = None
+    classes: Dict[str, Dict[str, Any]] = {}  # name -> {name, index, color}
+    used = set()
+    models, saved_ats, series = [], [], ""
+    loaded = []
+    for path in paths:
+        data, header = nrrd.read(path, index_order="F")
+        flat = np.ascontiguousarray(data.ravel(order="F"), dtype=np.uint8)
+        loaded.append((int(np.count_nonzero(flat)), len(loaded), data.shape, header, flat))
+    loaded.sort(key=lambda item: -item[0])  # largest first = bottom layer
+    if 0 <= top < len(loaded):
+        loaded.sort(key=lambda item: item[1] == top)  # stable: just moves it last
+    for _, _, shape, header, flat in loaded:
+        if sizes is None:
+            sizes = [int(s) for s in shape]
+            merged = np.zeros(flat.size, np.uint8)
+        elif [int(s) for s in shape] != sizes:
+            raise ValueError(f"saves have different sizes ({sizes} vs {list(shape)}) - not from the same image")
+        try:
+            file_classes = json.loads(str(header.get("classes") or "[]"))
+        except ValueError:
+            file_classes = []
+        if not isinstance(file_classes, list) or not file_classes:
+            # No class list (not saved by this tool): keep its numbers as they are.
+            file_classes = [{"name": f"label {int(v)}", "index": int(v)} for v in np.unique(flat) if v]
+        lut = np.zeros(256, np.uint8)
+        for c in file_classes:
+            name, index = str(c["name"]), int(c["index"])
+            if name not in classes:
+                target = index if 0 < index < 256 and index not in used else next(i for i in range(1, 256) if i not in used)
+                used.add(target)
+                classes[name] = {"name": name, "index": target, **({"color": c["color"]} if "color" in c else {})}
+            lut[index & 255] = classes[name]["index"]
+        mapped = lut[flat]
+        np.copyto(merged, mapped, where=mapped != 0)
+        if header.get("model"):
+            models.append(str(header["model"]))
+        if header.get("saved_at"):
+            saved_ats.append(str(header["saved_at"]))
+        series = series or str(header.get("series_instance_uid") or "")
+
+    present = set(np.unique(merged).tolist())
+    keys = {
+        "format": FORMAT,
+        "model": " + ".join(dict.fromkeys(models)),
+        "classes": json.dumps(
+            sorted((c for c in classes.values() if c["index"] in present), key=lambda c: c["index"]),
+            separators=(",", ":"),
+        ),
+        "series_instance_uid": series,
+        "saved_at": max(saved_ats) if saved_ats else "",
+    }
+    return encode_rle(merged), {"sizes": sizes, "keys": keys, "top": loaded[-1][1] if loaded else -1}
+
+
 def _vec(values):
     return "(" + ",".join(repr(float(v)) for v in values) + ")"
 

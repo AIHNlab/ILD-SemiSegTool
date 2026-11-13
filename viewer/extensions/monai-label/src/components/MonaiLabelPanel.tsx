@@ -115,6 +115,9 @@ export default class MonaiLabelPanel extends Component<any, any> {
       action: {},
       options: {},
       busyActions: {},
+      // Saves loaded together (Load dialog "Load selected together"):
+      // {seriesUID, saves, top} - the panel then offers which one is on top.
+      mergedLayers: null,
     };
   }
 
@@ -295,6 +298,9 @@ export default class MonaiLabelPanel extends Component<any, any> {
   };
 
   private segmentationsSpec = null;
+  // The save(s) currently shown, for marking them in the Load dialog:
+  // {seriesUID, tags} - cleared when something else is loaded from a file.
+  private loadedSaves: { seriesUID: string; tags: string[] } | null = null;
   private segmentationCreation: Promise<void> | null = null;
 
   // Creates the segmentation labelmap the first time something needs it (an
@@ -735,6 +741,64 @@ export default class MonaiLabelPanel extends Component<any, any> {
     }
   };
 
+  // Loads several saves layered into one (server: merge_saved_labels) -
+  // largest underneath, or `top` (a save's tag) on top - and remembers them so
+  // the panel's "Merged layers" box can switch which one is on top.
+  loadMerged = async (seriesUID, saves, top) => {
+    const nid = `load-${Date.now()}`;
+    this.notification.show({ id: nid, title: 'MONAI Label', message: `Merging ${saves.length} saved segmentations...`, type: 'loading' });
+    try {
+      const r = await this.client().download_label_merged(seriesUID, saves.map(s => s.tag), top);
+      if (r.status !== 200) {
+        throw new Error(describeError(r));
+      }
+      const meta = JSON.parse(r.headers?.['x-label-meta'] || '{}');
+      const total = (meta.sizes || []).reduce((a, b) => a * b, 1);
+      const onTop = saves.find(s => s.tag === meta.top);
+      await this.onImportSegmentationFile(
+        { name: `${saves.length} saves merged${onTop ? ` (${onTop.model || 'manual'} on top)` : ''}` },
+        {
+          fromServer: true,
+          nid,
+          mergedLayers: { seriesUID, saves, top: meta.top || null },
+          loadedTags: saves.map(s => s.tag),
+          loaded: {
+            sizes: meta.sizes || [],
+            keys: meta.keys || {},
+            decode: (lut) => decodeLabelmap(r.data as ArrayBuffer, total, lut).data,
+          },
+        }
+      );
+    } catch (err) {
+      this.notification.hide(nid);
+      this.notification.show({
+        title: 'MONAI Label',
+        message: `Merging the saved segmentations failed: ${err?.message || err}`,
+        type: 'error',
+        duration: 8000,
+      });
+    }
+  };
+
+  // "Merged layers" box: puts another of the merged saves on top. Rebuilt from
+  // the saves, so edits made since loading would be lost - ask first.
+  onMergedTopChange = (tag) => {
+    const merged = this.state.mergedLayers;
+    if (!merged || merged.top === tag) {
+      return;
+    }
+    if (
+      annotationHistory.hasEdits() &&
+      !window.confirm(
+        'Changing which layer is on top reloads the merged saves, so your edits since loading ' +
+          'them are lost (save first to keep them). Continue?'
+      )
+    ) {
+      return;
+    }
+    this.loadMerged(merged.seriesUID, merged.saves, tag);
+  };
+
   // Opens the list of this series' saves on the server (Load / Download /
   // Delete each), which also offers loading a .nrrd file from the computer.
   onClickLoadSegmentation = async (e) => {
@@ -787,6 +851,7 @@ export default class MonaiLabelPanel extends Component<any, any> {
       });
 
     const { uiDialogService } = this.props.servicesManager.services;
+    const loadedTags = this.loadedSaves?.seriesUID === seriesUID ? this.loadedSaves.tags : [];
     loadSegmentationDialog(uiDialogService, saves, {
       onLoad: async save => {
         const nid = `load-${Date.now()}`;
@@ -804,6 +869,7 @@ export default class MonaiLabelPanel extends Component<any, any> {
             { name: `the save from ${save.savedAt?.toLocaleString() ?? save.tag}` },
             {
               fromServer: true,
+              loadedTags: [save.tag],
               nid,
               loaded: {
                 sizes: meta.sizes || [],
@@ -817,6 +883,7 @@ export default class MonaiLabelPanel extends Component<any, any> {
           failed('Loading the segmentation', err);
         }
       },
+      onLoadMerged: picked => this.loadMerged(seriesUID, picked, null),
       onDownload: async save => {
         try {
           const buffer = await fetchSave(save);
@@ -854,7 +921,7 @@ export default class MonaiLabelPanel extends Component<any, any> {
         };
         input.click();
       },
-    });
+    }, loadedTags);
   };
 
   // Loads a segmentation saved via saveToServer - from the server, or
@@ -868,7 +935,10 @@ export default class MonaiLabelPanel extends Component<any, any> {
   // they're rebuilt and remapped in one pass of block fills. Without it, `file`
   // is a .nrrd from the computer, parsed here.
   // `nid`: id of a "Loading..." toast already showing - the result replaces it.
-  onImportSegmentationFile = async (file, { fromServer = false, loaded = null, nid = null } = {}) => {
+  onImportSegmentationFile = async (
+    file,
+    { fromServer = false, loaded = null, nid = null, mergedLayers = null, loadedTags = null } = {}
+  ) => {
     const toast = { title: 'MONAI Label', ...(nid ? { id: nid } : {}) };
     const fail = (message) => this.notification.show({ ...toast, message, type: 'error', duration: 8000 });
 
@@ -965,6 +1035,9 @@ export default class MonaiLabelPanel extends Component<any, any> {
     // resetBaseline's own comment for why undo shouldn't be able to step
     // back past it to whatever segmentation existed before.
     annotationHistory.installState(() => writeLabelmap(volumeLoadObject, remapped), remapped);
+    // The "Merged layers" box only applies to what was just merged.
+    this.setState({ mergedLayers });
+    this.loadedSaves = loadedTags && displaySet ? { seriesUID: displaySet.SeriesInstanceUID, tags: loadedTags } : null;
     if (keys.model) {
       // Later saves and Regional Stats then attribute this segmentation to
       // the model that originally produced it.
@@ -1043,6 +1116,26 @@ export default class MonaiLabelPanel extends Component<any, any> {
               <LoadIcon />
             </a>
             <hr className="separator" />
+            {this.state.mergedLayers && (
+              <div className="mergedLayers">
+                <div className="mergedLayersTitle">Merged layers - on top:</div>
+                {this.state.mergedLayers.saves.map(save => (
+                  <label key={save.tag} className="mergedLayersRow">
+                    <input
+                      type="radio"
+                      name="merged-top"
+                      checked={this.state.mergedLayers.top === save.tag}
+                      onChange={() => this.onMergedTopChange(save.tag)}
+                    />
+                    <span>{save.model || 'manual'}</span>
+                    <span className="mergedLayersDate">
+                      {save.savedAt ? save.savedAt.toLocaleString() : save.tag}
+                    </span>
+                  </label>
+                ))}
+                <hr className="separator" />
+              </div>
+            )}
           </div>
         )}
         {isDataReady && (

@@ -57,30 +57,49 @@ async def _saved_label_rle(scope, send, user):
     """GET /datastore/label/rle?label=<image id>&tag=<tag>: one of the user's
     saved segmentations, run-length encoded (lib/label_upload.py), with its
     size and metadata (classes, model, ...) as JSON in the X-Label-Meta header.
-    The viewer's Load uses this instead of the .nrrd file itself."""
+    The viewer's Load uses this instead of the .nrrd file itself.
+
+    GET /datastore/label/merge-rle?label=<image id>&tags=<tag>,<tag>,...[&top=<tag>]:
+    the same for several saves layered into one - largest underneath, or `top`
+    on top (label_upload.merge_saved_labels); X-Label-Meta then also has "top",
+    the tag that ended up on top. Used by the Load dialog's "Load selected
+    together" and the panel's "Merged layers" switch."""
     from urllib.parse import parse_qs
 
     import anyio
 
     query = parse_qs(scope.get("query_string", b"").decode("latin-1"))
     label, tag = (query.get("label") or [""])[0], (query.get("tag") or [""])[0]
+    merge = scope["path"].endswith("/merge-rle")
+    tags = [t for t in (query.get("tags") or [""])[0].split(",") if t] if merge else [tag]
+    top_tag = (query.get("top") or [""])[0]
 
     def work():
         from monailabel.interfaces.utils.app import app_instance
 
-        from lib.label_upload import saved_label_rle
+        from lib.label_upload import merge_saved_labels, saved_label_rle
 
         token = current_user.set(user)  # picks this user's own datastore
         try:
-            uri = app_instance().datastore().get_label_uri(label, tag) if label and tag else ""
-            return saved_label_rle(uri) if uri and uri.endswith(".nrrd") else None
+            datastore = app_instance().datastore()
+            uris = [datastore.get_label_uri(label, t) if label and t else "" for t in tags]
+            if not uris or not all(u and u.endswith(".nrrd") for u in uris):
+                return None
+            if not merge:
+                return saved_label_rle(uris[0])
+            body, meta = merge_saved_labels(uris, tags.index(top_tag) if top_tag in tags else -1)
+            meta["top"] = tags[meta["top"]] if meta.get("top", -1) >= 0 else ""
+            return body, meta
         finally:
             current_user.reset(token)
 
     try:
         found = await anyio.to_thread.run_sync(work)
+    except ValueError as e:  # e.g. saves of different images
+        await _json(send, 400, {"detail": str(e)})
+        return
     except Exception as e:
-        logger.exception(f"user={user} GET /datastore/label/rle failed")
+        logger.exception(f"user={user} GET {scope['path']} failed")
         await _json(send, 500, {"detail": f"Could not read the saved segmentation: {e}"})
         return
     if not found:
@@ -101,7 +120,7 @@ async def _saved_label_rle(scope, send, user):
         }
     )
     await send({"type": "http.response.body", "body": body})
-    logger.info(f"user={user} GET /datastore/label/rle tag={tag} -> 200 ({len(body)} bytes)")
+    logger.info(f"user={user} GET {scope['path']} tags={','.join(tags)} -> 200 ({len(body)} bytes)")
 
 
 async def _reject(send):
@@ -123,7 +142,7 @@ def wrap(inner):
 
             await _json(send, 200, run_queue.status(scope["path"][len("/run-status/"):]))
             return
-        if scope["path"] == "/datastore/label/rle" and scope["method"] == "GET":
+        if scope["path"] in ("/datastore/label/rle", "/datastore/label/merge-rle") and scope["method"] == "GET":
             await _saved_label_rle(scope, send, user)
             return
         status = {}

@@ -456,6 +456,12 @@ class AnnotationHistory {
     }
   };
 
+  // Whether anything was edited since the last installState (load).
+  hasEdits = () => {
+    this.flushPendingChanges();
+    return this.undoStack.length > 0;
+  };
+
   clearAll = () => {
     this.flushPendingChanges();
     this.suppressTracking = true;

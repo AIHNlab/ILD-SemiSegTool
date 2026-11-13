@@ -173,6 +173,19 @@ export default class MonaiLabelClient {
     return await MonaiLabelClient.api_get_data(url.toString(), 'arraybuffer');
   }
 
+  // Several saves layered into one on the server (later tags on top), same
+  // shape as download_label_rle.
+  // `top` (optional): the tag to draw on top; otherwise largest underneath.
+  async download_label_merged(image, tags, top = null) {
+    let url = new URL('datastore/label/merge-rle', this.server_url);
+    url.searchParams.append('label', image);
+    url.searchParams.append('tags', tags.join(','));
+    if (top) {
+      url.searchParams.append('top', top);
+    }
+    return await MonaiLabelClient.api_get_data(url.toString(), 'arraybuffer');
+  }
+
   async download_label(image, tag) {
     let url = new URL('datastore/label', this.server_url);
     url.searchParams.append('label', image);

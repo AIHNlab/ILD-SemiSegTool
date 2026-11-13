@@ -9,6 +9,26 @@
 //     getMenuOptions hook in ui-next Header.tsx); uploading is OHIF's own
 //     "Upload" on the study list (dicomUploadEnabled).
 
+// Safari: render the image views at normal (not Retina) resolution.
+// Cornerstone draws all views into one hidden WebGL canvas and copies each
+// view onto the page; Safari reads every copy back from the GPU, which made
+// the brush (all views redraw on every mouse move) lag. At 1x there are 4x
+// fewer pixels to draw and copy. Images look slightly softer on Retina
+// screens in Safari only; panels and text stay sharp. Chrome/Edge copy on
+// the GPU and keep full resolution. Set to false to turn this off.
+const SAFARI_STANDARD_RESOLUTION = true;
+(function () {
+  const ua = navigator.userAgent;
+  const isSafari = /safari/i.test(ua) && !/chrome|chromium|crios|fxios|edg|android/i.test(ua);
+  if (SAFARI_STANDARD_RESOLUTION && isSafari && window.devicePixelRatio > 1) {
+    try {
+      Object.defineProperty(window, 'devicePixelRatio', { get: () => 1, configurable: true });
+    } catch (e) {
+      console.warn('Could not lower the rendering resolution for Safari', e);
+    }
+  }
+})();
+
 // Logged-in username, from the gateway (it knows it from the session cookie).
 var currentUser = '';
 fetch('/whoami', { cache: 'no-store' })
