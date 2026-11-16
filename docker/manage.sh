@@ -364,7 +364,7 @@ clean_up() {
 #   model name      files under backend/model/
 model_files() {
   local models=",$(env_get MODELS)," m
-  for m in nnunet_lung:Lung nnunet_ild:ILD_raw nnunet_airways:Airways; do
+  for m in nnunet_lung:Lung nnunet_ild:ILD_raw nnunet_airways:Airways nnunet_lobes:lobe_bench_nnunet; do
     case "$models" in *",${m%%:*},"*)
       for f in plans.json dataset.json checkpoint_best.pth; do echo "${m%%:*} nnUNet_weights/${m#*:}/$f"; done ;;
     esac
@@ -376,20 +376,28 @@ model_files() {
 # anything is built; resumes an interrupted download). Files already there are
 # never replaced. HF_TOKEN in .env is only needed if the repo is private.
 fetch_models() {
-  local base token n=0 failed=0 model f
+  local base token code n=0 failed=0 model f
   command -v curl >/dev/null 2>&1 || die "curl is needed to download the model weights - install it (e.g. sudo apt install curl)"
-  base="https://huggingface.co/$(env_get HF_REPO AIHNLab/ILD-SemiSegTool)/resolve/main/$(env_get HF_SUBDIR HuggingFace)"
+  base="https://huggingface.co/$(env_get HF_REPO AIHNLab/ILD-SemiSegTool-private)/resolve/main/$(env_get HF_SUBDIR HuggingFace)"
   token=$(env_get HF_TOKEN)
   echo "Downloading missing model weights from $base ..."
   while read -r model f; do
     [ -s "$MODEL_DIR/$f" ] && continue
     mkdir -p "$(dirname "$MODEL_DIR/$f")"
     echo "  $f"
-    if curl -fL --retry 3 -C - --progress-bar ${token:+-H "Authorization: Bearer $token"} \
-      -o "$MODEL_DIR/$f.part" "$base/$(echo "$f" | sed 's/+/%2B/g')"; then
+    code=$(curl -L --retry 3 -C - --progress-bar -w '%{http_code}' ${token:+-H "Authorization: Bearer $token"} \
+      -o "$MODEL_DIR/$f.part" "$base/$(echo "$f" | sed 's/+/%2B/g')") || true
+    if [ "$code" = 200 ] || [ "$code" = 206 ]; then
       mv "$MODEL_DIR/$f.part" "$MODEL_DIR/$f"; n=$((n + 1))
     else
-      echo "  !! download failed: $base/$f"; failed=1
+      rm -f "$MODEL_DIR/$f.part"; failed=1
+      case "$code" in
+        401 | 403) echo "  !! no access ($code): the repo is private - set HF_TOKEN in .env to a Read token of an account with access"
+          [ -n "$token" ] && echo "     (the HF_TOKEN in .env was refused - expired, or no access to $(env_get HF_REPO AIHNLab/ILD-SemiSegTool-private))"
+          break ;;
+        404) echo "  !! not found (404): $base/$f" ;;
+        *) echo "  !! download failed (${code:-no connection}): $base/$f" ;;
+      esac
     fi
   done <<EOF2
 $(model_files)
@@ -417,9 +425,10 @@ EOF2
   cat <<'EOF'
   Expected in the repo's backend/model/ folder - the same layout as the
   Hugging Face release (./manage.sh fetch-models downloads what's missing):
-    nnUNet_weights/Lung/                       (nnunet_lung)
-    nnUNet_weights/ILD_raw/                    (nnunet_ild)
-    nnUNet_weights/Airways/                    (nnunet_airways)
+    nnUNet_weights/Lung/                  (nnunet_lung)
+    nnUNet_weights/ILD_raw/               (nnunet_ild)
+    nnUNet_weights/Airways/               (nnunet_airways)
+    nnUNet_weights/lobe_bench_nnunet/     (nnunet_lobes)
         plans.json  dataset.json  checkpoint_best.pth
     MedSAM2+nnUNet_weights/checkpoint_best_val.pt   (sam2_ild)
   Copy the weights there, or remove models you don't have from MODELS= in .env.

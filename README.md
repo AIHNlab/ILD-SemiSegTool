@@ -200,19 +200,25 @@ Accounts, monitoring, backups and troubleshooting are covered in
 
 The weights always go in the repo's **`backend/model/`** folder (not tracked
 by git), in the same layout as their release on Hugging Face
-([AIHNLab/ILD-SemiSegTool](https://huggingface.co/AIHNLab/ILD-SemiSegTool),
+([AIHNLab/ILD-SemiSegTool-private](https://huggingface.co/AIHNLab/ILD-SemiSegTool-private),
 folder `HuggingFace/`). `./manage.sh init` (and `up`) downloads any that are
-missing (~1.2 GB, needs `curl`); `./manage.sh fetch-models` retries an
+missing (~1.5 GB, needs `curl`); `./manage.sh fetch-models` retries an
 interrupted download. Files already there are never replaced.
+
+That repo is private: put a "Read" token of an account with access in
+`docker/.env` as `HF_TOKEN=hf_...` (create one at
+https://huggingface.co/settings/tokens). `HF_REPO` / `HF_SUBDIR` there choose
+another repo or folder.
 
 ```
 backend/model/
 ├── nnUNet_weights/
-│   ├── Lung/          plans.json, dataset.json, checkpoint_best.pth   nnunet_lung
-│   ├── ILD_raw/       plans.json, dataset.json, checkpoint_best.pth   nnunet_ild
-│   └── Airways/       plans.json, dataset.json, checkpoint_best.pth   nnunet_airways
+│   ├── Lung/                  plans.json, dataset.json, checkpoint_best.pth   nnunet_lung
+│   ├── ILD_raw/               plans.json, dataset.json, checkpoint_best.pth   nnunet_ild
+│   ├── Airways/               plans.json, dataset.json, checkpoint_best.pth   nnunet_airways
+│   └── lobe_bench_nnunet/     plans.json, dataset.json, checkpoint_best.pth   nnunet_lobes
 └── MedSAM2+nnUNet_weights/
-    └── checkpoint_best_val.pt                                          sam2_ild
+    └── checkpoint_best_val.pt                                                  sam2_ild
 ```
 
 To add them by hand, copy the files themselves, not links: a link pointing

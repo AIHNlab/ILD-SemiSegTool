@@ -422,6 +422,12 @@ export const GenericAnatomyColors = [
   { label: 'airway', value: rgbToHex(255, 0, 0) },
   { label: 'bronchi', value: rgbToHex(175, 216, 244) },
   { label: 'lung', value: rgbToHex(197, 165, 145) },
+  // Lung lobes (nnunet_lobes - same colors as backend/lib/configs/nnunet_lobes.py)
+  { label: 'left upper lobe (lul)', value: rgbToHex(30, 80, 200) },
+  { label: 'left lower lobe (lll)', value: rgbToHex(0, 150, 120) },
+  { label: 'right upper lobe (rul)', value: rgbToHex(220, 120, 0) },
+  { label: 'right middle lobe (rml)', value: rgbToHex(150, 30, 160) },
+  { label: 'right lower lobe (rll)', value: rgbToHex(190, 20, 60) },
   { label: 'lung tumor', value: rgbToHex(144, 238, 144) },
   { label: 'right lung', value: rgbToHex(197, 165, 145) },
   { label: 'left lung', value: rgbToHex(197, 165, 145) },

@@ -11,6 +11,7 @@ change run `./manage.sh restart monailabel`.
 | `nnunet_lung` | `lib/configs/nnunet_lung.py` | Automatic lung segmentation (nnU-Net) |
 | `nnunet_ild` | `lib/configs/nnunet_ild.py` | Automatic ILD segmentation (nnU-Net) |
 | `nnunet_airways` | `lib/configs/nnunet_airways.py` | Automatic airway segmentation (nnU-Net) |
+| `nnunet_lobes` | `lib/configs/nnunet_lobes.py` | Automatic lung lobe segmentation: LUL, LLL, RUL, RML, RLL (nnU-Net) |
 | `sam2_ild` | `lib/configs/sam2_ild.py` | Prompt-guided interactive ILD segmentation (MedSAM2) |
 
 Model weights live in `model/`, laid out like their Hugging Face release (`model/nnUNet_weights/<Model>/`,
