@@ -418,9 +418,9 @@ export const GenericAnatomyColors = [
   { label: 'hyoid bone', value: rgbToHex(250, 210, 139) },
   { label: 'cervical vertebral column', value: rgbToHex(255, 255, 207) },
   { label: 'thorax', value: rgbToHex(177, 122, 101) },
-  { label: 'trachea', value: rgbToHex(160, 0, 0) },
+  { label: 'trachea', value: rgbToHex(230, 0, 230) },
   { label: 'airway', value: rgbToHex(255, 0, 0) },
-  { label: 'bronchi', value: rgbToHex(255, 100, 50) },
+  { label: 'bronchi', value: rgbToHex(0, 170, 255) },
   { label: 'lung', value: rgbToHex(197, 165, 145) },
   // Lung lobes (nnunet_lobes - same colors as backend/lib/configs/nnunet_lobes.py)
   { label: 'left upper lobe (lul)', value: rgbToHex(30, 80, 200) },
@@ -428,6 +428,10 @@ export const GenericAnatomyColors = [
   { label: 'right upper lobe (rul)', value: rgbToHex(220, 120, 0) },
   { label: 'right middle lobe (rml)', value: rgbToHex(150, 30, 160) },
   { label: 'right lower lobe (rll)', value: rgbToHex(190, 20, 60) },
+  // Visible fissures (Fissure Analysis tab)
+  { label: 'left oblique fissure', value: rgbToHex(80, 255, 80) },
+  { label: 'right oblique fissure', value: rgbToHex(255, 230, 0) },
+  { label: 'right horizontal fissure', value: rgbToHex(0, 230, 255) },
   { label: 'lung tumor', value: rgbToHex(144, 238, 144) },
   { label: 'right lung', value: rgbToHex(197, 165, 145) },
   { label: 'left lung', value: rgbToHex(197, 165, 145) },

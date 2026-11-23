@@ -173,6 +173,72 @@ async def _airway_split(scope, receive, send, user):
     logger.info(f"user={user} POST /airways/split -> 200 in {time.monotonic() - start:.1f}s")
 
 
+async def _fissure_analysis(scope, receive, send, user):
+    """POST /fissures/analyse?image=<image id>: the body is the viewer's lobe
+    mask, run-length encoded (1 = LUL, 2 = LLL, 3 = RUL, 4 = RML, 5 = RLL;
+    optionally gzipped), and the X-Geometry header its {sizes, spacing,
+    direction, origin} as JSON. The scan's CT comes from the user's datastore.
+    Answers with the visible fissures (1 = left oblique, 2 = right oblique,
+    3 = right horizontal) in the same form and the X-Fissure-Meta header with
+    per-fissure results. See lib/fissure_analysis.py."""
+    from urllib.parse import parse_qs
+
+    import anyio
+
+    image = (parse_qs(scope.get("query_string", b"").decode("latin-1")).get("image") or [""])[0]
+    geometry_raw = dict(scope.get("headers", [])).get(b"x-geometry", b"")
+    chunks = []
+    while True:
+        message = await receive()
+        chunks.append(message.get("body", b""))
+        if not message.get("more_body"):
+            break
+    body = b"".join(chunks)
+    start = time.monotonic()
+    try:
+        geometry = json.loads(geometry_raw.decode("latin-1") or "{}")
+        if not image:
+            raise ValueError("no image given")
+
+        def work():
+            from monailabel.interfaces.utils.app import app_instance
+
+            from lib.fissure_analysis import analyse_fissures
+
+            token = current_user.set(user)  # this user's own datastore
+            try:
+                ct_path = app_instance().datastore().get_image_uri(image)
+            finally:
+                current_user.reset(token)
+            if not ct_path:
+                raise ValueError("this scan's CT is not available on the server - open it once with an AI model first")
+            return analyse_fissures(body, geometry, ct_path)
+
+        out, meta = await anyio.to_thread.run_sync(work)
+    except (ValueError, KeyError, TypeError) as e:  # bad input, no lobes, ...
+        logger.info(f"user={user} POST /fissures/analyse -> 422: {e}")
+        await _json(send, 422, {"detail": str(e)})
+        return
+    except Exception as e:
+        logger.exception(f"user={user} POST /fissures/analyse failed")
+        await _json(send, 500, {"detail": f"Fissure analysis failed: {e}"})
+        return
+    await send(
+        {
+            "type": "http.response.start",
+            "status": 200,
+            "headers": [
+                (b"content-type", b"application/octet-stream"),
+                (b"content-length", str(len(out)).encode()),
+                (b"cache-control", b"no-store"),
+                (b"x-fissure-meta", json.dumps(meta).encode()),
+            ],
+        }
+    )
+    await send({"type": "http.response.body", "body": out})
+    logger.info(f"user={user} POST /fissures/analyse -> 200 in {time.monotonic() - start:.1f}s")
+
+
 async def _reject(send):
     await _json(send, 401, {"detail": "Not logged in"})
 
@@ -191,6 +257,9 @@ def wrap(inner):
             from lib import run_queue
 
             await _json(send, 200, run_queue.status(scope["path"][len("/run-status/"):]))
+            return
+        if scope["path"] == "/fissures/analyse" and scope["method"] == "POST":
+            await _fissure_analysis(scope, receive, send, user)
             return
         if scope["path"] == "/airways/split" and scope["method"] == "POST":
             await _airway_split(scope, receive, send, user)

@@ -6,6 +6,7 @@
 
 import React, { forwardRef, useImperativeHandle, useState } from 'react';
 import { useActionTab, ActionTabProps } from './useActionTab';
+import { getLabelColor } from '../../utils/GenericUtils';
 import './BaseTab.css';
 import './Preprocessing.css';
 import './AirwaySplit.css';
@@ -18,7 +19,7 @@ interface AirwaySplitProps extends ActionTabProps {
 
 // Feather-style "git-branch" icon - one trunk splitting in two.
 const SplitIcon = () => (
-  <svg viewBox="0 0 24 24" width="18px" height="18px" fill="none" stroke="currentColor"
+  <svg viewBox="0 0 24 24" width="16px" height="16px" fill="none" stroke="currentColor"
     strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <line x1="6" y1="3" x2="6" y2="15" />
     <circle cx="18" cy="6" r="3" />
@@ -26,6 +27,16 @@ const SplitIcon = () => (
     <path d="M18 9a9 9 0 0 1-9 9" />
   </svg>
 );
+
+// The two classes the split produces (their colors: GenericAnatomyColors.js).
+const CLASSES = [
+  ['trachea', 'Trachea'],
+  ['bronchi', 'Bronchi'],
+];
+function color(label) {
+  const { r, g, b } = getLabelColor(label);
+  return `rgb(${r}, ${g}, ${b})`;
+}
 
 // The server's measurements (lib/airway_split.py) as table rows; missing
 // values are left out.
@@ -83,14 +94,29 @@ const AirwaySplit = forwardRef<any, AirwaySplitProps>((props, ref) => {
         <p style={{ fontSize: 'smaller' }}>
           Splits the airways (run <b>nnunet_airways</b> first) into trachea and bronchi.
         </p>
-        <button
-          className="actionButton preprocessButton"
-          onClick={run}
-          disabled={isBusy}
-        >
-          <SplitIcon />
+        <button className="airwaySplitButton" onClick={run} disabled={isBusy}>
+          {isBusy ? <span className="airwaySplitSpinner" /> : <SplitIcon />}
           <span>{isBusy ? 'Splitting…' : 'Split Airways'}</span>
         </button>
+        <div className="optionsTableContainer">
+          <hr />
+          <p>Classes:</p>
+          <hr />
+          <div className="bodyTableContainer">
+            <table className="optionsTable">
+              <tbody>
+                {CLASSES.map(([label, name]) => (
+                  <tr key={label}>
+                    <td>
+                      <span className="segColor" style={{ backgroundColor: color(label) }} />
+                    </td>
+                    <td>{name}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
         {result && (
           <div className="preprocessStats airwayStats">
             {rows(result).map(([label, value]) => (

@@ -1,5 +1,90 @@
-/* Airway Split results: the same rows as Preprocessing's stats, with a wider
-   label column for names like "Area 2 cm above carina". */
+/* Airway Split tab. */
+
+/* Primary action: slim, full width, square-ish corners - with a spinner
+   while the split runs. */
+.monaiLabelPanel .airwaySplitButton {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  height: 34px;
+  margin: 4px 0 8px;
+  padding: 0 14px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  background: linear-gradient(180deg, #1f8fd6 0%, #1677b8 100%);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  cursor: pointer;
+  transition: background 0.15s ease, box-shadow 0.15s ease;
+}
+.monaiLabelPanel .airwaySplitButton:hover:not(:disabled) {
+  background: linear-gradient(180deg, #2a9be3 0%, #1a83c9 100%);
+  box-shadow: 0 0 0 2px rgba(42, 155, 227, 0.25);
+}
+.monaiLabelPanel .airwaySplitButton:disabled {
+  background: #2b3a4a;
+  color: #9ab;
+  cursor: default;
+}
+.monaiLabelPanel .airwaySplitButton svg {
+  flex-shrink: 0;
+}
+.airwaySplitSpinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255, 255, 255, 0.25);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: airwaySplitSpin 0.8s linear infinite;
+}
+@keyframes airwaySplitSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Results: label/value rows that wrap instead of cutting values off, in a
+   box that scrolls when there are more rows than fit. */
+.airwayStats {
+  max-height: 320px;
+  overflow-y: auto;
+  margin-top: 8px;
+  padding: 2px 6px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
+  font-size: 12px;
+}
+.airwayStats .preprocessStatsRow {
+  align-items: flex-start;
+  padding: 3px 0;
+}
 .airwayStats .preprocessStatsLabel {
-  flex: 0 0 125px;
+  flex: 0 0 48%;
+  white-space: normal;
+}
+.airwayStats .preprocessStatsValue {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  overflow-wrap: anywhere;
+  text-align: right;
+  color: #e6edf3;
+}
+
+/* Fissure Analysis: one header row per fissure in the results box. */
+.airwayStats .fissureStatsHeader {
+  align-items: center;
+  gap: 6px;
+  padding-top: 6px;
+  font-weight: 600;
+  color: #fff;
+}
+.airwayStats .fissureStatsHeader .segColor {
+  width: 10px;
+  height: 10px;
+  flex-shrink: 0;
 }

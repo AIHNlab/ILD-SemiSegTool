@@ -22,6 +22,7 @@ import ActiveLearning from './actions/ActiveLearning';
 import RegionalStats from './actions/RegionalStats';
 import Preprocessing from './actions/Preprocessing';
 import AirwaySplit from './actions/AirwaySplit';
+import FissureAnalysis, { FISSURE_CLASSES, LOBE_CLASSES } from './actions/FissureAnalysis';
 import MonaiLabelClient from '../services/MonaiLabelClient';
 import { hideNotification, getLabelColor, describeError } from '../utils/GenericUtils';
 import { Enums } from '@cornerstonejs/tools';
@@ -90,6 +91,7 @@ export default class MonaiLabelPanel extends Component<any, any> {
     regionalstats: any;
     preprocessing: any;
     airwaysplit: any;
+    fissures: any;
   };
   serverURI = 'http://127.0.0.1:8000';
   // Tracked purely for the Save Segmentation dialog's auto-filled "Model"
@@ -112,6 +114,7 @@ export default class MonaiLabelPanel extends Component<any, any> {
       regionalstats: React.createRef(),
       preprocessing: React.createRef(),
       airwaysplit: React.createRef(),
+      fissures: React.createRef(),
     };
 
     this.state = {
@@ -256,6 +259,10 @@ export default class MonaiLabelPanel extends Component<any, any> {
     // An airway model's result can be split into these two (Airway Split tab).
     if (all_labels.includes('airway')) {
       all_labels.push('trachea', 'bronchi');
+    }
+    // A lobe model's result can be analysed for fissures (Fissure Analysis tab).
+    if (LOBE_CLASSES.every((name) => all_labels.includes(name))) {
+      all_labels.push(...FISSURE_CLASSES);
     }
     const labelsOrdered = [...new Set(all_labels)].sort();
     const segmentations = [
@@ -448,6 +455,84 @@ export default class MonaiLabelPanel extends Component<any, any> {
     } catch (e) {
       this.notification.hide(nid);
       return fail(`Could not split the airways: ${describeError(e)}`);
+    }
+  };
+
+  // Fissure Analysis tab: sends the lobes (as 1..5, LOBE_CLASSES order) to
+  // the server, which finds the fissure planes, detects the visible fissures
+  // on the CT and measures them (backend lib/fissure_analysis.py); the
+  // detected fissures are drawn over the lobes - one undo step. Resolves to
+  // the server's results, or null on failure (reported here).
+  analyseFissures = async () => {
+    const fail = (message) => {
+      this.notification.show({ title: 'Fissure Analysis', message, type: 'error', duration: 10000 });
+      return null;
+    };
+    await this.ensureSegmentation();
+    const volume = this.labelmapVolume();
+    const { info } = currentSegmentsInfo(this.props.servicesManager.services.segmentationService);
+    const lobeIndex = LOBE_CLASSES.map((name) => info[name]?.segmentIndex);
+    const fissureIndex = FISSURE_CLASSES.map((name) => info[name]?.segmentIndex);
+    const { displaySet } = this.getActiveViewportInfo();
+    if (!volume || !displaySet || lobeIndex.some((i) => !i) || fissureIndex.some((i) => !i)) {
+      return fail('The lobe classes are not available - connect to a MONAI Label server with nnunet_lobes.');
+    }
+    const toLobe = new Uint8Array(256);
+    lobeIndex.forEach((segmentIndex, i) => (toLobe[segmentIndex] = i + 1));
+    const data = copyLabelmap(volume);
+    const mask = new Uint8Array(data.length);
+    const found = new Set();
+    for (let i = 0; i < data.length; i++) {
+      const lobe = toLobe[data[i]];
+      if (lobe) {
+        mask[i] = lobe;
+        found.add(lobe);
+      }
+    }
+    if (found.size < 2) {
+      return fail('No lobe segmentation to analyse - run nnunet_lobes (Auto-Segmentation) or load a saved one first.');
+    }
+
+    const nid = `fissures-${Date.now()}`;
+    this.notification.show({ id: nid, title: 'Fissure Analysis', message: 'Finding and measuring the fissures (1-3 min)...', type: 'loading' });
+    try {
+      const body = await compressIfSupported(new Blob(encodeLabelmap(mask).parts));
+      const response = await this.client().analyse_fissures(displaySet.SeriesInstanceUID, body, {
+        sizes: Array.from(volume.dimensions),
+        spacing: Array.from(volume.spacing),
+        direction: Array.from(volume.direction),
+        origin: Array.from(volume.origin),
+      });
+      this.notification.hide(nid);
+      if (response?.status !== 200) {
+        let detail = describeError(response);
+        try {
+          detail = JSON.parse(new TextDecoder().decode(response.response.data)).detail || detail;
+        } catch (e) {
+          // not a JSON error body - keep describeError's text
+        }
+        return fail(`Could not analyse the fissures: ${detail}`);
+      }
+      const lut = new Uint8Array(256);
+      fissureIndex.forEach((segmentIndex, i) => (lut[i + 1] = segmentIndex));
+      const { data: visible } = decodeLabelmap(response.data, data.length, lut);
+      for (let i = 0; i < data.length; i++) {
+        if (visible[i]) {
+          data[i] = visible[i];
+        }
+      }
+      annotationHistory.recordReplace(() => writeLabelmap(volume, data), data);
+      let meta = null;
+      try {
+        meta = JSON.parse(response.headers['x-fissure-meta'] || 'null');
+      } catch (e) {
+        meta = null;
+      }
+      this.notification.show({ title: 'Fissure Analysis', message: 'Fissures detected and measured', type: 'success', duration: 4000 });
+      return meta || {};
+    } catch (e) {
+      this.notification.hide(nid);
+      return fail(`Could not analyse the fissures: ${describeError(e)}`);
     }
   };
 
@@ -1428,6 +1513,18 @@ export default class MonaiLabelPanel extends Component<any, any> {
               isBusy={!!this.state.busyActions['airwaysplit']}
               onSelectActionTab={this.onSelectActionTab}
               onSplit={this.splitAirways}
+            />
+            )}
+            {LOBE_CLASSES.every((name) => this.state.info?.labels?.includes(name)) && (
+            <FissureAnalysis
+              ref={this.actions['fissures']}
+              tabIndex={8}
+              info={this.state.info}
+              client={this.client}
+              setBusy={(busy: boolean) => this.setBusy('fissures', busy)}
+              isBusy={!!this.state.busyActions['fissures']}
+              onSelectActionTab={this.onSelectActionTab}
+              onAnalyse={this.analyseFissures}
             />
             )}
             <SemiSegmentation

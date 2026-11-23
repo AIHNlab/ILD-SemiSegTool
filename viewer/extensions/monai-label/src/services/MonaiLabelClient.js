@@ -204,6 +204,24 @@ export default class MonaiLabelClient {
     }
   }
 
+  // Fissure analysis on the server (backend lib/fissure_analysis.py): `body`
+  // is the lobe mask run-length encoded (1 = LUL, 2 = LLL, 3 = RUL, 4 = RML,
+  // 5 = RLL), `geometry` {sizes, spacing, direction, origin}; `image` the
+  // scan, whose CT the server reads. response.data: the visible fissures
+  // (1..3) in the same form; X-Fissure-Meta header: per-fissure results.
+  async analyse_fissures(image, body, geometry) {
+    const url = new URL('fissures/analyse', this.server_url);
+    url.searchParams.append('image', image);
+    try {
+      return await axios.post(url.toString(), body, {
+        responseType: 'arraybuffer',
+        headers: { 'Content-Type': 'application/octet-stream', 'X-Geometry': JSON.stringify(geometry) },
+      });
+    } catch (error) {
+      return error;
+    }
+  }
+
   async download_label(image, tag) {
     let url = new URL('datastore/label', this.server_url);
     url.searchParams.append('label', image);
