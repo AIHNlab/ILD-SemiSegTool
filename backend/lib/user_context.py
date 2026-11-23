@@ -123,6 +123,56 @@ async def _saved_label_rle(scope, send, user):
     logger.info(f"user={user} GET {scope['path']} tags={','.join(tags)} -> 200 ({len(body)} bytes)")
 
 
+async def _airway_split(scope, receive, send, user):
+    """POST /airways/split: the body is the viewer's airway mask, run-length
+    encoded (lib/label_upload.py; optionally gzipped), and the X-Geometry
+    header its {sizes, spacing, direction} as JSON. Answers with the trachea
+    (1) / bronchi (2) labelmap in the same form and the X-Split-Meta header
+    (voxel counts, trachea length, ...). See lib/airway_split.py."""
+    import anyio
+
+    geometry_raw = dict(scope.get("headers", [])).get(b"x-geometry", b"")
+    chunks = []
+    while True:
+        message = await receive()
+        chunks.append(message.get("body", b""))
+        if not message.get("more_body"):
+            break
+    body = b"".join(chunks)
+    start = time.monotonic()
+    try:
+        geometry = json.loads(geometry_raw.decode("latin-1") or "{}")
+
+        def work():
+            from lib.airway_split import split_airways
+
+            return split_airways(body, geometry)
+
+        out, meta = await anyio.to_thread.run_sync(work)
+    except (ValueError, KeyError, TypeError) as e:  # bad input, or no carina found
+        logger.info(f"user={user} POST /airways/split -> 422: {e}")
+        await _json(send, 422, {"detail": str(e)})
+        return
+    except Exception as e:
+        logger.exception(f"user={user} POST /airways/split failed")
+        await _json(send, 500, {"detail": f"Airway split failed: {e}"})
+        return
+    await send(
+        {
+            "type": "http.response.start",
+            "status": 200,
+            "headers": [
+                (b"content-type", b"application/octet-stream"),
+                (b"content-length", str(len(out)).encode()),
+                (b"cache-control", b"no-store"),
+                (b"x-split-meta", json.dumps(meta).encode()),
+            ],
+        }
+    )
+    await send({"type": "http.response.body", "body": out})
+    logger.info(f"user={user} POST /airways/split -> 200 in {time.monotonic() - start:.1f}s")
+
+
 async def _reject(send):
     await _json(send, 401, {"detail": "Not logged in"})
 
@@ -141,6 +191,9 @@ def wrap(inner):
             from lib import run_queue
 
             await _json(send, 200, run_queue.status(scope["path"][len("/run-status/"):]))
+            return
+        if scope["path"] == "/airways/split" and scope["method"] == "POST":
+            await _airway_split(scope, receive, send, user)
             return
         if scope["path"] in ("/datastore/label/rle", "/datastore/label/merge-rle") and scope["method"] == "GET":
             await _saved_label_rle(scope, send, user)

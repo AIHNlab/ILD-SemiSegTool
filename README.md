@@ -216,7 +216,7 @@ backend/model/
 │   ├── Lung/                  plans.json, dataset.json, checkpoint_best.pth   nnunet_lung
 │   ├── ILD_raw/               plans.json, dataset.json, checkpoint_best.pth   nnunet_ild
 │   ├── Airways/               plans.json, dataset.json, checkpoint_best.pth   nnunet_airways
-│   └── lobe_bench_nnunet/     plans.json, dataset.json, checkpoint_best.pth   nnunet_lobes
+│   └── Lobe/                  plans.json, dataset.json, checkpoint_best.pth   nnunet_lobes
 └── MedSAM2+nnUNet_weights/
     └── checkpoint_best_val.pt                                                  sam2_ild
 ```

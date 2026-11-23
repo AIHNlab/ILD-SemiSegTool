@@ -8,7 +8,32 @@ cd "$(dirname "${BASH_SOURCE[0]}")"
 USERS_FILE=users.generated.yml
 
 die() { echo "Error: $*" >&2; exit 1; }
-need_env() { [ -f .env ] || die "no .env yet - run ./manage.sh init first"; }
+need_env() { [ -f .env ] || die "no .env yet - run ./manage.sh init first"; sync_env; }
+# .env isn't in git, so a `git pull` never updates it. Settings added to
+# .env.example since .env was made are appended with their default value, and
+# models .env.example lists that MODELS= here doesn't are reported (not added -
+# MODELS may leave some out on purpose). Once per run.
+sync_env() {
+  local key line added="" missing="" m
+  [ -n "${ENV_SYNCED:-}" ] && return 0; ENV_SYNCED=1
+  [ -f .env.example ] || return 0
+  while IFS= read -r line; do
+    key=${line%%=*}
+    case "$key" in "" | \#* | *[!A-Z0-9_]*) continue ;; esac
+    grep -q "^$key=" .env && continue
+    [ -z "$added" ] && printf '\n# Added by manage.sh from .env.example (new settings)\n' >> .env
+    echo "$line" >> .env; added="$added $key"
+  done < .env.example
+  [ -n "$added" ] && echo "Added new settings to .env (defaults from .env.example):$added"
+  for m in $(sed -n 's/^MODELS=//p' .env.example | tail -n 1 | tr ',' ' '); do
+    case ",$(env_get MODELS)," in *",$m,"*) ;; *) missing="$missing $m" ;; esac
+  done
+  if [ -n "$missing" ]; then
+    echo "Note: model(s) available but not enabled in MODELS= in .env:$missing"
+    echo "      To use them, set: MODELS=$(sed -n 's/^MODELS=//p' .env.example | tail -n 1)"
+  fi
+  return 0
+}
 # Value of KEY in .env (quotes stripped), or $2 if unset.
 env_get() { local v; v=$(sed -n "s/^$1=//p" .env | tail -n 1 | tr -d "\"'\r"); echo "${v:-${2:-}}"; }
 # Sets KEY=VALUE in .env (replacing or appending), without sed -i (differs on macOS).
@@ -364,7 +389,7 @@ clean_up() {
 #   model name      files under backend/model/
 model_files() {
   local models=",$(env_get MODELS)," m
-  for m in nnunet_lung:Lung nnunet_ild:ILD_raw nnunet_airways:Airways nnunet_lobes:lobe_bench_nnunet; do
+  for m in nnunet_lung:Lung nnunet_ild:ILD_raw nnunet_airways:Airways nnunet_lobes:Lobe; do
     case "$models" in *",${m%%:*},"*)
       for f in plans.json dataset.json checkpoint_best.pth; do echo "${m%%:*} nnUNet_weights/${m#*:}/$f"; done ;;
     esac
@@ -428,7 +453,7 @@ EOF2
     nnUNet_weights/Lung/                  (nnunet_lung)
     nnUNet_weights/ILD_raw/               (nnunet_ild)
     nnUNet_weights/Airways/               (nnunet_airways)
-    nnUNet_weights/lobe_bench_nnunet/     (nnunet_lobes)
+    nnUNet_weights/Lobe/                  (nnunet_lobes)
         plans.json  dataset.json  checkpoint_best.pth
     MedSAM2+nnUNet_weights/checkpoint_best_val.pt   (sam2_ild)
   Copy the weights there, or remove models you don't have from MODELS= in .env.

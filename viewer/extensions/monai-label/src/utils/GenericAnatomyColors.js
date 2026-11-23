@@ -418,9 +418,9 @@ export const GenericAnatomyColors = [
   { label: 'hyoid bone', value: rgbToHex(250, 210, 139) },
   { label: 'cervical vertebral column', value: rgbToHex(255, 255, 207) },
   { label: 'thorax', value: rgbToHex(177, 122, 101) },
-  { label: 'trachea', value: rgbToHex(182, 228, 255) },
+  { label: 'trachea', value: rgbToHex(160, 0, 0) },
   { label: 'airway', value: rgbToHex(255, 0, 0) },
-  { label: 'bronchi', value: rgbToHex(175, 216, 244) },
+  { label: 'bronchi', value: rgbToHex(255, 100, 50) },
   { label: 'lung', value: rgbToHex(197, 165, 145) },
   // Lung lobes (nnunet_lobes - same colors as backend/lib/configs/nnunet_lobes.py)
   { label: 'left upper lobe (lul)', value: rgbToHex(30, 80, 200) },

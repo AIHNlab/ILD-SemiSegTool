@@ -186,6 +186,24 @@ export default class MonaiLabelClient {
     return await MonaiLabelClient.api_get_data(url.toString(), 'arraybuffer');
   }
 
+  // Splits an airway mask into trachea (1) and bronchi (2) on the server
+  // (backend lib/airway_split.py). `body`: the mask run-length encoded
+  // (utils/labelmapRle.js); `geometry`: {sizes, spacing, direction}.
+  // response.data is the result in the same form; the X-Split-Meta header
+  // has voxel counts and the trachea length. Errors come back as the axios
+  // error (its response.data an ArrayBuffer with {detail}).
+  async split_airways(body, geometry) {
+    const url = new URL('airways/split', this.server_url).toString();
+    try {
+      return await axios.post(url, body, {
+        responseType: 'arraybuffer',
+        headers: { 'Content-Type': 'application/octet-stream', 'X-Geometry': JSON.stringify(geometry) },
+      });
+    } catch (error) {
+      return error;
+    }
+  }
+
   async download_label(image, tag) {
     let url = new URL('datastore/label', this.server_url);
     url.searchParams.append('label', image);

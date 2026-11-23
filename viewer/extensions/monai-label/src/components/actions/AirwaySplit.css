@@ -1,0 +1,5 @@
+/* Airway Split results: the same rows as Preprocessing's stats, with a wider
+   label column for names like "Area 2 cm above carina". */
+.airwayStats .preprocessStatsLabel {
+  flex: 0 0 125px;
+}

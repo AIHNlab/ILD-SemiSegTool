@@ -21,6 +21,7 @@ import ClassPrompts from './actions/ClassPrompts';
 import ActiveLearning from './actions/ActiveLearning';
 import RegionalStats from './actions/RegionalStats';
 import Preprocessing from './actions/Preprocessing';
+import AirwaySplit from './actions/AirwaySplit';
 import MonaiLabelClient from '../services/MonaiLabelClient';
 import { hideNotification, getLabelColor, describeError } from '../utils/GenericUtils';
 import { Enums } from '@cornerstonejs/tools';
@@ -88,6 +89,7 @@ export default class MonaiLabelPanel extends Component<any, any> {
     classprompts: any;
     regionalstats: any;
     preprocessing: any;
+    airwaysplit: any;
   };
   serverURI = 'http://127.0.0.1:8000';
   // Tracked purely for the Save Segmentation dialog's auto-filled "Model"
@@ -109,6 +111,7 @@ export default class MonaiLabelPanel extends Component<any, any> {
       classprompts: React.createRef(),
       regionalstats: React.createRef(),
       preprocessing: React.createRef(),
+      airwaysplit: React.createRef(),
     };
 
     this.state = {
@@ -250,6 +253,10 @@ export default class MonaiLabelPanel extends Component<any, any> {
         .map(Number);
     }
 
+    // An airway model's result can be split into these two (Airway Split tab).
+    if (all_labels.includes('airway')) {
+      all_labels.push('trachea', 'bronchi');
+    }
     const labelsOrdered = [...new Set(all_labels)].sort();
     const segmentations = [
       {
@@ -364,6 +371,84 @@ export default class MonaiLabelPanel extends Component<any, any> {
       });
     }
     return this.segmentationCreation;
+  };
+
+  // Airway Split tab: sends the airway voxels to the server, which splits
+  // them into trachea and bronchi (backend lib/airway_split.py), and writes
+  // the result over them - one undo step. Resolves to the server's summary,
+  // or null on failure (reported here).
+  splitAirways = async () => {
+    const fail = (message) => {
+      this.notification.show({ title: 'Airway Split', message, type: 'error', duration: 10000 });
+      return null;
+    };
+    await this.ensureSegmentation();
+    const volume = this.labelmapVolume();
+    const { info } = currentSegmentsInfo(this.props.servicesManager.services.segmentationService);
+    const index = (name) => info[name]?.segmentIndex;
+    const [airway, trachea, bronchi] = [index('airway'), index('trachea'), index('bronchi')];
+    if (!volume || !airway || !trachea || !bronchi) {
+      return fail('The airway classes are not available - connect to a MONAI Label server with nnunet_airways.');
+    }
+    const data = copyLabelmap(volume);
+    const mask = new Uint8Array(data.length);
+    let count = 0;
+    for (let i = 0; i < data.length; i++) {
+      if (data[i] === airway) {
+        mask[i] = 1;
+        count++;
+      }
+    }
+    if (!count) {
+      return fail('No airway segmentation to split - run nnunet_airways (Auto-Segmentation) or load a saved one first.');
+    }
+
+    const nid = `split-${Date.now()}`;
+    this.notification.show({ id: nid, title: 'Airway Split', message: 'Finding the trachea and carina...', type: 'loading' });
+    try {
+      const body = await compressIfSupported(new Blob(encodeLabelmap(mask).parts));
+      const response = await this.client().split_airways(body, {
+        sizes: Array.from(volume.dimensions),
+        spacing: Array.from(volume.spacing),
+        direction: Array.from(volume.direction),
+      });
+      this.notification.hide(nid);
+      if (response?.status !== 200) {
+        let detail = describeError(response);
+        try {
+          detail = JSON.parse(new TextDecoder().decode(response.response.data)).detail || detail;
+        } catch (e) {
+          // not a JSON error body - keep describeError's text
+        }
+        return fail(`Could not split the airways: ${detail}`);
+      }
+      const lut = new Uint8Array(256);
+      lut[1] = trachea;
+      lut[2] = bronchi;
+      const { data: split } = decodeLabelmap(response.data, data.length, lut);
+      for (let i = 0; i < data.length; i++) {
+        if (split[i]) {
+          data[i] = split[i];
+        }
+      }
+      annotationHistory.recordReplace(() => writeLabelmap(volume, data), data);
+      let meta = null;
+      try {
+        meta = JSON.parse(response.headers['x-split-meta'] || 'null');
+      } catch (e) {
+        meta = null;
+      }
+      this.notification.show({
+        title: 'Airway Split',
+        message: meta ? `Trachea and bronchi separated - trachea ${meta.trachea_length_mm} mm long` : 'Trachea and bronchi separated',
+        type: 'success',
+        duration: 5000,
+      });
+      return meta || {};
+    } catch (e) {
+      this.notification.hide(nid);
+      return fail(`Could not split the airways: ${describeError(e)}`);
+    }
   };
 
   // The labelmap volume, or null if it doesn't exist yet (see
@@ -1333,6 +1418,18 @@ export default class MonaiLabelPanel extends Component<any, any> {
               getActiveViewportInfo={this.getActiveViewportInfo}
               onModelUsed={this.onModelUsed}
             />
+            {this.state.info?.labels?.includes('airway') && (
+            <AirwaySplit
+              ref={this.actions['airwaysplit']}
+              tabIndex={7}
+              info={this.state.info}
+              client={this.client}
+              setBusy={(busy: boolean) => this.setBusy('airwaysplit', busy)}
+              isBusy={!!this.state.busyActions['airwaysplit']}
+              onSelectActionTab={this.onSelectActionTab}
+              onSplit={this.splitAirways}
+            />
+            )}
             <SemiSegmentation
               ref={this.actions['semisegmentation']}
               tabIndex={4}

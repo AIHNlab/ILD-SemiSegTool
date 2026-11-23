@@ -6,9 +6,9 @@ from lib.infers.nnunet import NNUNet
 
 logger = logging.getLogger(__name__)
 
-# Same layout as the Hugging Face release (backend/model/nnUNet_weights/lobe_bench_nnunet/:
+# Same layout as the Hugging Face release (backend/model/nnUNet_weights/Lobe/:
 # plans.json, dataset.json, checkpoint_best.pth).
-MODEL_FOLDER = "nnUNet_weights/lobe_bench_nnunet"
+MODEL_FOLDER = "nnUNet_weights/Lobe"
 
 
 class NNUNetLobes(TaskConfig):
