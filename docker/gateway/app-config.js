@@ -29,6 +29,69 @@ const SAFARI_STANDARD_RESOLUTION = true;
   }
 })();
 
+// Diagnostics: tells the server (backend log, `./manage.sh user-logs <user>`)
+// what this browser can do for image rendering, and reports page errors, so
+// a problem on someone's own device (tablet, another browser) can be found
+// without its developer console. Sent once at load, then per error (max 30).
+(function () {
+  let sent = 0;
+  function report(kind, data) {
+    if (sent++ >= 30) {
+      return;
+    }
+    try {
+      const body = JSON.stringify(Object.assign({ kind: kind, page: location.href }, data)).slice(0, 8000);
+      fetch('/monai/client-log', { method: 'POST', body: body, keepalive: true }).catch(function () {});
+    } catch (e) {}
+  }
+  function webgl() {
+    try {
+      const c = document.createElement('canvas');
+      const gl = c.getContext('webgl2');
+      if (!gl) {
+        return { webgl2: false, webgl1: !!c.getContext('webgl') };
+      }
+      const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+      const ext = ['EXT_color_buffer_float', 'OES_texture_float_linear', 'EXT_texture_norm16'];
+      return {
+        webgl2: true,
+        renderer: dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER),
+        max3DTexture: gl.getParameter(gl.MAX_3D_TEXTURE_SIZE),
+        maxTexture: gl.getParameter(gl.MAX_TEXTURE_SIZE),
+        extensions: ext.filter(function (e) { return !!gl.getExtension(e); }),
+      };
+    } catch (e) {
+      return { webglError: String(e) };
+    }
+  }
+  report('load', {
+    ua: navigator.userAgent,
+    secureContext: window.isSecureContext,
+    crossOriginIsolated: window.crossOriginIsolated,
+    memoryGB: navigator.deviceMemory,
+    screen: screen.width + 'x' + screen.height + '@' + window.devicePixelRatio,
+    gl: webgl(),
+  });
+  window.addEventListener('error', function (e) {
+    report('error', { message: String(e.message), source: e.filename + ':' + e.lineno, stack: e.error && String(e.error.stack).slice(0, 2000) });
+  });
+  window.addEventListener('unhandledrejection', function (e) {
+    const r = e.reason;
+    report('rejection', { message: String((r && r.message) || r), stack: r && r.stack && String(r.stack).slice(0, 2000) });
+  });
+  const origError = console.error;
+  console.error = function () {
+    try {
+      report('console.error', {
+        message: Array.prototype.map.call(arguments, function (a) {
+          return a instanceof Error ? a.message + ' ' + (a.stack || '') : typeof a === 'object' ? (function () { try { return JSON.stringify(a); } catch (x) { return String(a); } })() : String(a);
+        }).join(' ').slice(0, 3000),
+      });
+    } catch (x) {}
+    return origError.apply(console, arguments);
+  };
+})();
+
 // Logged-in username, from the gateway (it knows it from the session cookie).
 var currentUser = '';
 fetch('/whoami', { cache: 'no-store' })

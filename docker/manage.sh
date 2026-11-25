@@ -394,7 +394,7 @@ model_files() {
       for f in plans.json dataset.json checkpoint_best.pth; do echo "${m%%:*} nnUNet_weights/${m#*:}/$f"; done ;;
     esac
   done
-  case "$models" in *,sam2_ild,*) echo "sam2_ild MedSAM2+nnUNet_weights/checkpoint_best_val.pt" ;; esac
+  case "$models" in *,sam2_ild,*) echo "sam2_ild MedSAM2+nnUNet_weights/checkpoint_ild.pt" ;; esac
 }
 
 # Downloads the missing ones from Hugging Face (plain curl, so it works before
@@ -455,7 +455,7 @@ EOF2
     nnUNet_weights/Airways/               (nnunet_airways)
     nnUNet_weights/Lobe/                  (nnunet_lobes)
         plans.json  dataset.json  checkpoint_best.pth
-    MedSAM2+nnUNet_weights/checkpoint_best_val.pt   (sam2_ild)
+    MedSAM2+nnUNet_weights/checkpoint_ild.pt   (sam2_ild)
   Copy the weights there, or remove models you don't have from MODELS= in .env.
 EOF
   return 1
@@ -582,6 +582,33 @@ case "$cmd" in
     ;;
   down | stop)
     need_env; compose down
+    ;;
+  dev)
+    # Frontend development: the viewer from source with live reload, at
+    # http://<this machine>:DEV_PORT/ (default 3300), in front of the running
+    # gateway (login, studies, MONAI Label as usual). Ctrl+C stops it. When
+    # done: ./manage.sh build gateway && ./manage.sh up.
+    need_env
+    dev_port=$(env_get DEV_PORT 3300)
+    gateway_url="http://127.0.0.1:$(env_get HTTP_PORT 8080)"
+    curl -s -o /dev/null --max-time 5 "$gateway_url/login" || die "the gateway isn't running at $gateway_url - start it first: ./manage.sh up"
+    if [ "$E" = podman ]; then as_me="--userns=keep-id"; else as_me="--user $(id -u):$(id -g)"; fi
+    tty=-i; [ -t 0 ] && tty=-it
+    host=$(hostname -I 2>/dev/null | awk '{print $1}')
+    echo "Viewer dev server: http://${host:-localhost}:$dev_port/  (log in there; it reloads when you save a file)"
+    echo "First start installs the viewer's packages (10-20 min); later starts take about a minute."
+    # shellcheck disable=SC2086
+    ctr run --rm $tty --name ild-semiseg-viewer-dev --network host $as_me -e HOME=/tmp \
+      -v "$(abs_path ../viewer)":/viewers -v "$(abs_path gateway)":/gateway:ro -w /viewers \
+      -e GATEWAY_PROXY="$gateway_url" -e OHIF_PORT="$dev_port" -e PUBLIC_URL=/ohif/ \
+      -e APP_CONFIG=config/ild-dev.js -e NODE_OPTIONS=--max-old-space-size=8192 \
+      docker.io/library/node:20-bullseye sh -c '
+        cp /gateway/app-config.js platform/app/public/config/ild-dev.js || exit 1
+        if [ ! -f node_modules/.yarn-integrity ] || [ yarn.lock -nt node_modules/.yarn-integrity ]; then
+          echo "Installing the viewer packages..."
+          yarn install --frozen-lockfile --network-timeout 600000 || exit 1
+        fi
+        cd platform/app && exec yarn run dev'
     ;;
   restart)
     # Recreate rather than restart, so edited code files (e.g. backend/main.py) are picked up.
@@ -722,6 +749,8 @@ Monitoring
   progress                  watch AI runs live, with progress bars
   user-logs NAME [SINCE]    everything about one user's recent activity/errors
   restart [SERVICE]         restart one service (or all)
+  dev                       frontend development: the viewer from source with live
+                            reload on port DEV_PORT (3300), using the running gateway
   clean                     remove stale caches/old images (also done by up)
   backup                    archive accounts, studies, saves and .env into backups/
   restore FILE              replace all data with a backup (current data is kept aside)

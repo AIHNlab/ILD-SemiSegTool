@@ -230,7 +230,7 @@ const ClassPrompts = forwardRef<any, ActionTabProps>((props, ref) => {
         name="rd"
         id={tabId}
         className="tab-switch"
-        defaultValue="segmentation"
+        defaultValue="classprompts"
         onClick={onSelectActionTab}
       />
       <label htmlFor={tabId} className="tab-label">

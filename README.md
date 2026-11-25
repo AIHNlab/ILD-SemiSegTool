@@ -218,7 +218,7 @@ backend/model/
 │   ├── Airways/               plans.json, dataset.json, checkpoint_best.pth   nnunet_airways
 │   └── Lobe/                  plans.json, dataset.json, checkpoint_best.pth   nnunet_lobes
 └── MedSAM2+nnUNet_weights/
-    └── checkpoint_best_val.pt                                                  sam2_ild
+    └── checkpoint_ild.pt                                                       sam2_ild
 ```
 
 To add them by hand, copy the files themselves, not links: a link pointing

@@ -324,3 +324,22 @@ limitations under the License.
   color: #9ca3af;
   font-size: 11px;
 }
+
+/* Annotation Tools: "+ Add class…" picker under the class list */
+.annotationAddClass {
+  width: 100%;
+  margin-top: 6px;
+  padding: 4px 6px;
+  border-radius: 4px;
+  border: 1px solid #3a3f4b;
+  background: #151a25;
+  color: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.annotationHint {
+  font-size: 11px;
+  opacity: 0.7;
+  margin: 6px 0;
+}

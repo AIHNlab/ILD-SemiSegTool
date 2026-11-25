@@ -15,11 +15,11 @@ import React, { forwardRef, useEffect, useImperativeHandle, useRef, useState } f
 import { Icon } from '@ohif/ui';
 import ModelSelector from '../ModelSelector';
 import * as cornerstoneTools from '@cornerstonejs/tools';
-import { getEnabledElements } from '@cornerstonejs/core';
+import { eventTarget, getEnabledElements } from '@cornerstonejs/core';
 import { useActionTab, ActionTabProps } from './useActionTab';
 import { hideNotification, describeError, runStatusUpdater } from '../../utils/GenericUtils';
 import { renderAllViewports } from '../../utils/AnnotationHistory';
-import { copyLabelmap, sliceArrays, trackModifiedSlices } from '../../utils/labelmapAccess';
+import { copyLabelmap, presentSegmentValues, sliceArrays, trackModifiedSlices } from '../../utils/labelmapAccess';
 
 const SHAPE_TOOLS = {
   point: 'ProbeMONAILabel',
@@ -176,7 +176,7 @@ function boundsOf(points) {
   };
 }
 
-// For now Semi-Segmentation offers only these models (if the server has
+// For now Annotation Tools offers only these models (if the server has
 // them). Empty the list to offer every prompt-capable model again.
 const SEMI_SEGMENTATION_MODELS = ['sam2_ild'];
 
@@ -199,9 +199,29 @@ function isSam2Model(info, model) {
   return model && info.data.models[model]?.type === 'deepgrow';
 }
 
-function getModelLabels(info, model) {
+// The classes the annotation model (SAM2) knows - the ILD patterns. Only
+// these get the AI tools; every other class is edited with the brush.
+function aiClassNames(info): string[] {
+  const model = getModels(info)[0];
   const names = (model && info.modelLabelNames[model]) || [];
   return names.filter((name) => name !== 'background');
+}
+
+// Names of the segmentation's classes that currently have voxels, sorted.
+function activeClassNames(segmentationService, segInfo) {
+  const volume = segmentationService?.getSegmentation('1')
+    ? segmentationService.getLabelmapVolume('1')
+    : null;
+  const seen = volume ? presentSegmentValues(volume) : null;
+  if (!seen) {
+    return [];
+  }
+  return Object.keys(segInfo)
+    .filter((name) => {
+      const idx = segInfo[name].segmentIndex;
+      return idx > 0 && idx < 256 && seen[idx];
+    })
+    .sort((a, b) => a.localeCompare(b));
 }
 
 function forEachFrameOfReference(fn) {
@@ -253,6 +273,30 @@ const SemiSegmentation = forwardRef<any, ActionTabProps>((props, ref) => {
   const [currentShape, setCurrentShape] = useState('point');
   const [currentLabel, setCurrentLabel] = useState<string | null>(null);
   const [excludeMode, setExcludeMode] = useState(false);
+  // The classes the image's segmentation currently contains (have voxels) -
+  // what the class list offers. Refreshed when the labelmap changes.
+  const [activeLabels, setActiveLabels] = useState<string[]>([]);
+  const refreshActiveLabels = () => {
+    const names = activeClassNames(servicesManager?.services?.segmentationService, segmentInfo());
+    setActiveLabels((prev) => (prev.join('\n') === names.join('\n') ? prev : names));
+  };
+  const refreshRef = useRef(refreshActiveLabels);
+  refreshRef.current = refreshActiveLabels;
+  useEffect(() => {
+    // Debounced: a brush stroke fires this event on every mouse move.
+    let timer = null;
+    const onModified = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => refreshRef.current(), 600);
+    };
+    const event = cornerstoneTools.Enums.Events.SEGMENTATION_DATA_MODIFIED;
+    eventTarget.addEventListener(event, onModified);
+    onModified();
+    return () => {
+      clearTimeout(timer);
+      eventTarget.removeEventListener(event, onModified);
+    };
+  }, []);
   // Baseline for the brush tool's before/after diff (see snapshotBrush and
   // buildBrushParamsList) - null means no brush edits are pending.
   const [brushSnapshot, setBrushSnapshot] = useState<any>(null);
@@ -551,14 +595,35 @@ const SemiSegmentation = forwardRef<any, ActionTabProps>((props, ref) => {
     }
 
     // One prompt per mode, carrying every touched slice's own mask -
-    // xyBounds/zMin/zMax cover the union of all of them (see onRunInference,
-    // which pads zMin/zMax by SAM2_MAX_FRAMES_TO_TRACK on each end the same
-    // way it already does for a single-slice z).
+    // bounds3d covers the union of all of them, padded for the plane they
+    // were painted in.
     const toPrompt = (bySlice, mode) => {
       const sliceIndices = Array.from(bySlice.keys()).map(Number);
       const allPixels = sliceIndices.flatMap((sliceIndex) => bySlice.get(sliceIndex));
       const { xmin, ymin, xmax, ymax } = boundsOf(allPixels);
+      const zmin = Math.min(...sliceIndices);
+      const zmax = Math.max(...sliceIndices);
+      // The plane it was painted in - the axis with the fewest distinct
+      // coordinates, ties to axial; same rule as the server
+      // (sam2_interactive.py _propagate_brush). SAM2 tracks along that axis,
+      // so the merge region reaches SAM2_MAX_FRAMES_TO_TRACK past the stroke
+      // along it and BRUSH_NEIGHBORHOOD_MARGIN around it in-plane.
+      const distinct = [
+        sliceIndices.length,
+        new Set(allPixels.map((p) => p[1])).size,
+        new Set(allPixels.map((p) => p[0])).size,
+      ];
+      const axis = distinct.indexOf(Math.min(...distinct)); // 0 z, 1 y, 2 x
+      const pad = (a) => (a === axis ? SAM2_MAX_FRAMES_TO_TRACK : BRUSH_NEIGHBORHOOD_MARGIN);
       return {
+        bounds3d: {
+          xmin: xmin - pad(2),
+          xmax: xmax + pad(2),
+          ymin: ymin - pad(1),
+          ymax: ymax + pad(1),
+          zmin: zmin - pad(0),
+          zmax: zmax + pad(0),
+        },
         kind: 'brush',
         mode,
         params: {
@@ -567,14 +632,6 @@ const SemiSegmentation = forwardRef<any, ActionTabProps>((props, ref) => {
             brush_mask: bySlice.get(sliceIndex),
           })),
         },
-        xyBounds: {
-          xmin: xmin - BRUSH_NEIGHBORHOOD_MARGIN,
-          ymin: ymin - BRUSH_NEIGHBORHOOD_MARGIN,
-          xmax: xmax + BRUSH_NEIGHBORHOOD_MARGIN,
-          ymax: ymax + BRUSH_NEIGHBORHOOD_MARGIN,
-        },
-        zMin: Math.min(...sliceIndices),
-        zMax: Math.max(...sliceIndices),
       };
     };
 
@@ -631,14 +688,20 @@ const SemiSegmentation = forwardRef<any, ActionTabProps>((props, ref) => {
     setCurrentLabel(null);
   };
 
+  const isAiClass = (label: string | null) => !!label && aiClassNames(info).includes(label);
+
   const onSelectLabel = (label: string) => {
     setCurrentLabel(label);
-    if (currentShape === 'brush') {
+    // Only ILD classes have a model (SAM2) - the others are edited with the
+    // brush alone, so leave a shape tool that has nothing to run.
+    if (currentShape !== 'brush' && !isAiClass(label)) {
+      onSelectShape('brush', label);
+    } else if (currentShape === 'brush') {
       armBrush(label);
     }
   };
 
-  const onSelectShape = (shape: string) => {
+  const onSelectShape = (shape: string, label: string | null = currentLabel) => {
     if (shape === currentShape) {
       // Already this shape - re-running the tool swap is a no-op anyway,
       // and re-snapshotting here would silently discard a pending,
@@ -655,7 +718,7 @@ const SemiSegmentation = forwardRef<any, ActionTabProps>((props, ref) => {
     }
     // Re-targets the ticked class (it may have changed while another tool
     // was active) - a pending edit for that same class is kept, see armBrush.
-    armBrush(currentLabel);
+    armBrush(label);
     // The tool group may not have existed yet at mount (e.g. panel opened
     // before the viewport finished initializing) - re-apply here too so the
     // slider's value is never stale once brush is actually selectable.
@@ -675,6 +738,7 @@ const SemiSegmentation = forwardRef<any, ActionTabProps>((props, ref) => {
   };
 
   const onEnterActionTab = () => {
+    refreshActiveLabels();
     commandsManager.runCommand('setToolActive', { toolName: toolNameFor(currentShape, excludeMode) });
     if (currentShape === 'brush') {
       armBrush(currentLabel);
@@ -734,7 +798,7 @@ const SemiSegmentation = forwardRef<any, ActionTabProps>((props, ref) => {
     // which of the 8 patterns it is - unlike nnU-Net, which classifies the
     // prompted region into all of them at once - so only the SAM2 model
     // needs a class picked before running.
-    if (isSam2Model(info, model) && getModelLabels(info, model).length > 0 && !currentLabel) {
+    if (isSam2Model(info, model) && !currentLabel) {
       notification.show({
         title: 'MONAI Label - ' + model,
         message: 'Select a class first',
@@ -790,8 +854,8 @@ const SemiSegmentation = forwardRef<any, ActionTabProps>((props, ref) => {
       title: 'MONAI Label - ' + model,
       message:
         prompts.length > 1
-          ? `Running Semi-Segmentation Inference (0/${prompts.length})...`
-          : 'Running Semi-Segmentation Inference...',
+          ? `Running Annotation (0/${prompts.length})...`
+          : 'Running Annotation...',
       type: 'loading',
       autoClose: false,
     });
@@ -816,7 +880,7 @@ const SemiSegmentation = forwardRef<any, ActionTabProps>((props, ref) => {
     // body still throws downstream, in updateView, not here).
     try {
       for (let i = 0; i < prompts.length; i++) {
-        const { kind, params: roi, xyBounds, z, zMin, zMax, mode } = prompts[i];
+        const { kind, params: roi, xyBounds, z, mode, bounds3d } = prompts[i];
         // SAM2 always gets a z bound (its result is only ever real within
         // SAM2_MAX_FRAMES_TO_TRACK of the prompted slice(s)). nnU-Net's
         // result across the full depth is normally a real classification,
@@ -829,8 +893,8 @@ const SemiSegmentation = forwardRef<any, ActionTabProps>((props, ref) => {
         // which tracks SAM2_MAX_FRAMES_TO_TRACK past each end of that same
         // range rather than around one slice.
         let bounds = xyBounds;
-        if (kind === 'brush' && zMin != null && zMax != null) {
-          bounds = { ...xyBounds, zmin: zMin - SAM2_MAX_FRAMES_TO_TRACK, zmax: zMax + SAM2_MAX_FRAMES_TO_TRACK };
+        if (kind === 'brush' && bounds3d) {
+          bounds = bounds3d;
         } else if (z != null) {
           if (isSam2) {
             bounds = { ...xyBounds, zmin: z - SAM2_MAX_FRAMES_TO_TRACK, zmax: z + SAM2_MAX_FRAMES_TO_TRACK };
@@ -855,15 +919,15 @@ const SemiSegmentation = forwardRef<any, ActionTabProps>((props, ref) => {
           model, displaySet.SeriesInstanceUID, params, undefined, undefined,
           runStatusUpdater(notification, nid, 'MONAI Label - ' + model, () =>
             prompts.length > 1
-              ? `Running Semi-Segmentation Inference (${i + 1}/${prompts.length})...`
-              : 'Running Semi-Segmentation Inference...'
+              ? `Running Annotation (${i + 1}/${prompts.length})...`
+              : 'Running Annotation...'
           )
         );
 
         if (response.status !== 200) {
           failures++;
           lastError = response;
-          console.error('Semi-Segmentation prompt failed', response);
+          console.error('Annotation prompt failed', response);
           continue;
         }
 
@@ -888,7 +952,14 @@ const SemiSegmentation = forwardRef<any, ActionTabProps>((props, ref) => {
         // (add-brush) merge in additively without clearing anything else
         // nearby.
         // eslint-disable-next-line no-await-in-loop
-        await updateView(response, model, label_names, true, false, -1, bounds, mode);
+        // SAM2's mask is one object with no class of its own: it is written
+        // as the picked class, whichever model that class came from (lobes,
+        // airways, ILD...). nnU-Net classifies into its own classes.
+        if (isSam2 && currentLabel) {
+          await updateView(response, model, [currentLabel], true, true, -1, bounds, mode);
+        } else {
+          await updateView(response, model, label_names, true, false, -1, bounds, mode);
+        }
       }
 
       // Points are consumed once used - clear them so the next points
@@ -912,7 +983,7 @@ const SemiSegmentation = forwardRef<any, ActionTabProps>((props, ref) => {
       if (failures === prompts.length) {
         notification.show({
           title: 'MONAI Label - ' + model,
-          message: `Semi-Segmentation Inference failed: ${describeError(lastError)}`,
+          message: `Annotation failed: ${describeError(lastError)}`,
           type: 'error',
           duration: 8000,
         });
@@ -925,17 +996,17 @@ const SemiSegmentation = forwardRef<any, ActionTabProps>((props, ref) => {
         title: 'MONAI Label - ' + model,
         message:
           failures > 0
-            ? `Running Semi-Segmentation Inference - ${prompts.length - failures}/${prompts.length} succeeded (${describeError(lastError)})`
-            : 'Running Semi-Segmentation Inference - Successful',
+            ? `Running Annotation - ${prompts.length - failures}/${prompts.length} succeeded (${describeError(lastError)})`
+            : 'Running Annotation - Successful',
         type: failures > 0 ? 'warning' : 'success',
         duration: failures > 0 ? 8000 : 4000,
       });
     } catch (e) {
-      console.error('Semi-Segmentation inference failed', e);
+      console.error('Annotation failed', e);
       hideNotification(nid, notification);
       notification.show({
         title: 'MONAI Label - ' + model,
-        message: `Semi-Segmentation Inference failed: ${describeError(e)}`,
+        message: `Annotation failed: ${describeError(e)}`,
         type: 'error',
         duration: 8000,
       });
@@ -945,15 +1016,31 @@ const SemiSegmentation = forwardRef<any, ActionTabProps>((props, ref) => {
   };
 
   const models = getModels(info);
-  const display = models.length > 0 ? 'block' : 'none';
-  // ModelSelector defaults to the first model until the user changes it
-  // without telling this component - mirror that default here too.
-  const model = resolveModel(models, currentModel);
-  const labels = getModelLabels(info, model);
   const segInfo = segmentInfo();
+  // The segmentation's classes, plus the picked one even while it is still
+  // empty (just added below).
+  const labels =
+    currentLabel && !activeLabels.includes(currentLabel)
+      ? [...activeLabels, currentLabel].sort((a, b) => a.localeCompare(b))
+      : activeLabels;
+  const otherLabels = Object.keys(segInfo)
+    .filter((name) => segInfo[name].segmentIndex > 0 && !labels.includes(name))
+    .sort((a, b) => a.localeCompare(b));
+  // SAM2 and its prompt tools only for an ILD class.
+  const aiTools = models.length > 0 && isAiClass(currentLabel);
+
+  const toolButton = (shape: string, title: string, icon: React.ReactNode) => (
+    <button
+      className={`annotationToolButton ${currentShape === shape ? 'active' : ''}`}
+      title={title}
+      onClick={() => onSelectShape(shape)}
+    >
+      {icon}
+    </button>
+  );
 
   return (
-    <div className="tab" style={{ display: display }}>
+    <div className="tab">
       <input
         type="radio"
         name="rd"
@@ -964,60 +1051,69 @@ const SemiSegmentation = forwardRef<any, ActionTabProps>((props, ref) => {
       />
       <label htmlFor={tabId} className="tab-label">
         <span className="tabLabelText">
-          Semi-Segmentation
+          Annotation Tools
           {isBusy && <span className="tabBusyIndicator" title="Running…" />}
         </span>
       </label>
       <div className="tab-content">
+        <div className="optionsTableContainer">
+          <p>Class:</p>
+          <hr />
+          {labels.length === 0 && <p className="annotationHint">No classes yet - add one below.</p>}
+          <div className="bodyTableContainer">
+            <table className="optionsTable">
+              <tbody>
+                {labels.map((label) => (
+                  <tr key={label} className="clickable-row" onClick={() => onSelectLabel(label)}>
+                    <td>
+                      <input type="checkbox" checked={currentLabel === label} readOnly />
+                    </td>
+                    <td>
+                      <span className="segColor" style={{ backgroundColor: segColorToRgb(segInfo[label]) }} />
+                    </td>
+                    <td>{label}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {otherLabels.length > 0 && (
+            <select
+              className="annotationAddClass"
+              value=""
+              onChange={(e) => e.target.value && onSelectLabel(e.target.value)}
+            >
+              <option value="">+ Add class…</option>
+              {otherLabels.map((name) => (
+                <option key={name} value={name}>
+                  {name}
+                </option>
+              ))}
+            </select>
+          )}
+        </div>
+
         <div className="annotationToolRow">
-          <button
-            className={`annotationToolButton ${currentShape === 'point' ? 'active' : ''}`}
-            title="Point"
-            onClick={() => onSelectShape('point')}
-          >
-            <Icon name="tool-probe" width="16px" height="16px" />
-          </button>
-          <button
-            className={`annotationToolButton ${currentShape === 'rectangle' ? 'active' : ''}`}
-            title="Rectangle"
-            onClick={() => onSelectShape('rectangle')}
-          >
-            <Icon name="tool-rectangle" width="16px" height="16px" />
-          </button>
-          <button
-            className={`annotationToolButton ${currentShape === 'freehand' ? 'active' : ''}`}
-            title="Freehand"
-            onClick={() => onSelectShape('freehand')}
-          >
-            <Icon name="icon-tool-freehand-roi" width="16px" height="16px" />
-          </button>
-          <button
-            className={`annotationToolButton ${currentShape === 'brush' ? 'active' : ''}`}
-            title="Brush - paints/erases the selected class directly, then SAM2 propagates the edit to other slices on Run"
-            onClick={() => onSelectShape('brush')}
-          >
-            <Icon name="icon-tool-brush" width="16px" height="16px" />
-          </button>
+          {aiTools && (
+            <>
+              {toolButton('point', 'Point', <Icon name="tool-probe" width="16px" height="16px" />)}
+              {toolButton('rectangle', 'Rectangle', <Icon name="tool-rectangle" width="16px" height="16px" />)}
+              {toolButton('freehand', 'Freehand', <Icon name="icon-tool-freehand-roi" width="16px" height="16px" />)}
+            </>
+          )}
+          {toolButton('brush', 'Brush', <Icon name="icon-tool-brush" width="16px" height="16px" />)}
           <button
             className={`annotationToolButton excludeToolButton ${excludeMode ? 'active' : ''}`}
-            title={
-              currentShape === 'brush'
-                ? excludeMode
-                  ? 'Exclude mode ON - the brush now erases the selected class'
-                  : 'Exclude mode - toggle on to erase the selected class with the brush instead of painting it'
-                : excludeMode
-                  ? 'Exclude mode ON - the shape tools above now remove from the result'
-                  : 'Exclude mode - toggle on, then draw with the shape tools above to remove from the result'
-            }
+            title={currentShape === 'brush' ? 'Erase' : 'Exclude - draw a region to remove from the result'}
             onClick={onToggleExclude}
           >
             <ExcludeIcon />
           </button>
           <div className="annotationToolDivider" />
-          <button className="annotationToolButton" title="Undo last annotation" onClick={onUndo}>
+          <button className="annotationToolButton" title="Undo" onClick={onUndo}>
             <UndoIcon />
           </button>
-          <button className="annotationToolButton" title="Redo annotation" onClick={onRedo}>
+          <button className="annotationToolButton" title="Redo" onClick={onRedo}>
             <RedoIcon />
           </button>
           <div className="annotationToolDivider" />
@@ -1025,6 +1121,7 @@ const SemiSegmentation = forwardRef<any, ActionTabProps>((props, ref) => {
             <ResetIcon />
           </button>
         </div>
+
         {currentShape === 'brush' && (
           <div className="brushSizeRow">
             <span className="brushSizeLabel">Brush Radius</span>
@@ -1045,52 +1142,24 @@ const SemiSegmentation = forwardRef<any, ActionTabProps>((props, ref) => {
             <span className="brushSizeValue">{brushSize}mm</span>
           </div>
         )}
-        <ModelSelector
-          title="Semi-Segmentation"
-          models={models}
-          currentModel={currentModel}
-          onClick={onRunInference}
-          onSelectModel={onSelectModel}
-          usage={
-            <div style={{ fontSize: 'smaller' }}>
-              <br />
-              <p>
+
+        {!currentLabel && <p className="annotationHint">Pick a class to start annotating.</p>}
+
+        {aiTools && (
+          <ModelSelector
+            title="Annotation Tools"
+            models={models}
+            currentModel={currentModel}
+            onClick={onRunInference}
+            onSelectModel={onSelectModel}
+            usage={
+              <p className="annotationHint">
                 {currentShape === 'brush'
-                  ? 'Pick a class below, then paint (or, with Exclude on, erase) it directly on the image. Run sends that edit to SAM2 to propagate across the rest of the slices.'
-                  : 'Pick a tool above, draw on the image, then run inference.'}{' '}
-                {isSam2Model(info, model)
-                  ? 'SAM2 traces one object per run - pick a class below first to say which pattern it is.'
-                  : 'All classes found in that region are segmented at once - check a class below just to highlight it.'}
+                  ? 'Paint on a slice, then Run to spread it to nearby slices.'
+                  : 'Draw on the image, then Run.'}
               </p>
-            </div>
-          }
-        />
-        {labels.length > 0 && (
-          <div className="optionsTableContainer">
-            <hr />
-            <p>Class:</p>
-            <hr />
-            <div className="bodyTableContainer">
-              <table className="optionsTable">
-                <tbody>
-                  {labels.map((label) => (
-                    <tr key={label} className="clickable-row" onClick={() => onSelectLabel(label)}>
-                      <td>
-                        <input type="checkbox" checked={currentLabel === label} readOnly />
-                      </td>
-                      <td>
-                        <span
-                          className="segColor"
-                          style={{ backgroundColor: segColorToRgb(segInfo[label]) }}
-                        />
-                      </td>
-                      <td>{label}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
+            }
+          />
         )}
       </div>
     </div>

@@ -239,6 +239,22 @@ async def _fissure_analysis(scope, receive, send, user):
     logger.info(f"user={user} POST /fissures/analyse -> 200 in {time.monotonic() - start:.1f}s")
 
 
+async def _client_log(receive, send, user):
+    """POST /client-log: the viewer reports its browser's capabilities and any
+    errors (see docker/gateway/app-config.js), so problems on a user's own
+    device show up in `./manage.sh user-logs <user>`. Size-capped."""
+    body = b""
+    while True:
+        message = await receive()
+        if len(body) < 20000:
+            body += message.get("body", b"")
+        if not message.get("more_body"):
+            break
+    text = body[:20000].decode("utf-8", "replace").replace("\n", " | ")
+    logger.info(f"user={user} CLIENT {text}")
+    await _json(send, 200, {})
+
+
 async def _reject(send):
     await _json(send, 401, {"detail": "Not logged in"})
 
@@ -257,6 +273,9 @@ def wrap(inner):
             from lib import run_queue
 
             await _json(send, 200, run_queue.status(scope["path"][len("/run-status/"):]))
+            return
+        if scope["path"] == "/client-log" and scope["method"] == "POST":
+            await _client_log(receive, send, user)
             return
         if scope["path"] == "/fissures/analyse" and scope["method"] == "POST":
             await _fissure_analysis(scope, receive, send, user)

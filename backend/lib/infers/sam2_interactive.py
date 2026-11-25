@@ -186,6 +186,54 @@ class SAM2InteractiveInferTask(BasicInferTask):
 
         return pred_masks
 
+    def _propagate_brush(self, predictor, img_np, brush_masks):
+        """Propagates a brush edit through the volume in the plane it was painted
+        in. The edit arrives as changed voxels grouped by axial slice
+        ({roi_slice: z, brush_mask: [[x, y], ...]}); painted on a coronal or
+        sagittal view, it is one row/column of many axial slices - useless as
+        axial prompts. The plane is the axis with the fewest distinct
+        coordinates (one value for a single stroke): the volume is turned so
+        that axis runs over the frames, SAM2 tracks along it, and the result is
+        turned back. Returns (D, H, W) uint8 masks."""
+        import torch
+
+        vox = np.array(
+            [(int(e["roi_slice"]), int(round(y)), int(round(x))) for e in brush_masks for x, y in e["brush_mask"]],
+            dtype=np.int64,
+        )  # (n, 3) as z, y, x
+        distinct = [len(np.unique(vox[:, i])) for i in range(3)]
+        axis = int(np.argmin(distinct))  # 0 axial, 1 coronal, 2 sagittal; ties -> axial
+        order = {0: (0, 1, 2), 1: (1, 0, 2), 2: (2, 0, 1)}[axis]
+        logger.info("SAM2 brush: %d voxels, propagating along %s", len(vox), ("axial", "coronal", "sagittal")[axis])
+
+        frames = np.ascontiguousarray(img_np.transpose(order))
+        fd, fh, fw = frames.shape
+        pts = vox[:, order]  # (frame, row, col)
+        frames_tensor = torch.from_numpy(_resize_to_rgb(normalize_ct(frames))).float()
+
+        frame_masks = []
+        for fi in np.unique(pts[:, 0]):
+            sel = pts[pts[:, 0] == fi]
+            mask_2d = np.zeros((fh, fw), dtype=np.uint8)
+            ok = (sel[:, 1] >= 0) & (sel[:, 1] < fh) & (sel[:, 2] >= 0) & (sel[:, 2] < fw)
+            mask_2d[sel[ok, 1], sel[ok, 2]] = 1
+            scaled = np.array(PILImage.fromarray(mask_2d * 255).resize((SAM2_SIZE, SAM2_SIZE), PILImage.NEAREST)) > 127
+            frame_masks.append((int(fi), scaled))
+
+        masks = self._propagate_multi(predictor, frames_tensor, frame_masks, fd, fh, fw)
+        # Already pixel-exact - clip to the stroke's bounding box (in its own
+        # plane) plus a margin, so tracking can't drift far from it.
+        clip = bbox_mask(
+            fw,
+            fh,
+            pts[:, 2].min() - BRUSH_PATCH_MARGIN,
+            pts[:, 1].min() - BRUSH_PATCH_MARGIN,
+            pts[:, 2].max() + BRUSH_PATCH_MARGIN,
+            pts[:, 1].max() + BRUSH_PATCH_MARGIN,
+        )
+        masks *= clip[None, :, :]
+        return np.ascontiguousarray(masks.transpose(np.argsort(order)))
+
     def __call__(self, request, callbacks=None):
         import SimpleITK as sitk
         import torch
@@ -211,37 +259,15 @@ class SAM2InteractiveInferTask(BasicInferTask):
         img_np = sitk.GetArrayFromImage(sitk_img).astype(np.float32)  # (D, H, W)
         d, h, w = img_np.shape
 
-        imgs_rgb = _resize_to_rgb(normalize_ct(img_np))
-        imgs_tensor = torch.from_numpy(imgs_rgb).float()
-
         predictor = self._get_predictor(device)
         pred_masks = np.zeros((d, h, w), dtype=np.uint8)
+        # Axial frames for every prompt except the brush, which picks its own
+        # plane (below).
+        imgs_tensor = None if brush_masks else torch.from_numpy(_resize_to_rgb(normalize_ct(img_np))).float()
 
         with torch.inference_mode():
             if brush_masks:
-                # The brush tool edits the segmentation labelmap directly on
-                # whichever slice(s) the user painted/erased on - these are
-                # that edit's pixel-exact deltas (see SemiSegmentation.tsx's
-                # buildBrushParamsList), fed to SAM2 as genuine mask prompts
-                # (add_new_mask) instead of being approximated as points/box
-                # like the other prompt types have to be.
-                frame_masks = []
-                for entry in brush_masks:
-                    mask_2d = np.zeros((h, w), dtype=np.uint8)
-                    for x, y in entry["brush_mask"]:
-                        xi, yi = int(round(x)), int(round(y))
-                        if 0 <= yi < h and 0 <= xi < w:
-                            mask_2d[yi, xi] = 1
-                    mask_scaled = (
-                        np.array(
-                            PILImage.fromarray(mask_2d * 255).resize((SAM2_SIZE, SAM2_SIZE), PILImage.NEAREST)
-                        )
-                        > 127
-                    )
-                    frame_masks.append((int(entry["roi_slice"]), mask_scaled))
-
-                pred_masks = self._propagate_multi(predictor, imgs_tensor, frame_masks, d, h, w)
-
+                pred_masks = self._propagate_brush(predictor, img_np, brush_masks)
             elif mask_polygon:
                 key_slice = int(roi_slice)
                 pts = _polygon_interior_points(mask_polygon, w, h)
@@ -299,20 +325,7 @@ class SAM2InteractiveInferTask(BasicInferTask):
         # to that region (video tracking especially can drift), so clip anything
         # it finds outside the drawn bounds, on every tracked slice.
         if brush_masks:
-            # The mask(s) are already pixel-exact - clip to the union of their
-            # bounding boxes plus a small margin so propagation/refinement on
-            # other slices can't drift far from where it was actually drawn.
-            xs = [x for entry in brush_masks for x, _ in entry["brush_mask"]]
-            ys = [y for entry in brush_masks for _, y in entry["brush_mask"]]
-            clip = bbox_mask(
-                w,
-                h,
-                min(xs) - BRUSH_PATCH_MARGIN,
-                min(ys) - BRUSH_PATCH_MARGIN,
-                max(xs) + BRUSH_PATCH_MARGIN,
-                max(ys) + BRUSH_PATCH_MARGIN,
-            )
-            pred_masks *= clip[None, :, :]
+            pass  # clipped in its own plane by _propagate_brush
         elif roi:
             xmin, ymin, _ = roi["start"]
             xmax, ymax, _ = roi["end"]

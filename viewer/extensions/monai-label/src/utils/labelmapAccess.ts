@@ -312,6 +312,31 @@ export function copyLabelmap(volume): Uint8Array | null {
   return out;
 }
 
+// Which segment values have at least one voxel (seen[v] === 1), read live
+// without copying. null if the labelmap can't be read.
+export function presentSegmentValues(volume): Uint8Array | null {
+  const arrays = sliceArrays(volume);
+  const chunks = arrays || [volume?.voxelManager?.getCompleteScalarDataArray()];
+  if (!chunks[0]) {
+    return null;
+  }
+  const seen = new Uint8Array(256);
+  for (const pixels of chunks) {
+    const n = pixels.length;
+    // Labelmaps are mostly runs of one value: only look up a value when it
+    // changes.
+    let last = -1;
+    for (let i = 0; i < n; i++) {
+      const v = pixels[i];
+      if (v !== last) {
+        seen[v] = 1;
+        last = v;
+      }
+    }
+  }
+  return seen;
+}
+
 // Collects which slices change from now on (brush strokes report their
 // slices; anything that doesn't sets `all`). stop() when done.
 export function trackModifiedSlices() {

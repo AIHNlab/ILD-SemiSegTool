@@ -25,7 +25,8 @@ export interface ActionTabProps {
   updateView?: (...args: any[]) => any;
   setBusy?: (busy: boolean) => void;
   isBusy?: boolean;
-  onSelectActionTab: (name: string) => void;
+  // `input`: the section's radio input, so clicking an open section closes it.
+  onSelectActionTab: (name: string, input?: HTMLInputElement) => void;
   onOptionsConfig?: () => any;
   getActiveViewportInfo?: () => any;
   servicesManager?: any;
@@ -117,7 +118,7 @@ export function useActionTab(props: ActionTabProps) {
   };
 
   const handleSelectActionTab = (evt: SyntheticEvent<HTMLInputElement>) => {
-    onSelectActionTab(evt.currentTarget.value);
+    onSelectActionTab(evt.currentTarget.value, evt.currentTarget);
   };
 
   return {

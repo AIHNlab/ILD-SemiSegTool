@@ -197,6 +197,24 @@ module.exports = (env, argv) => {
     };
   }
 
+  // ILD SemiSeg local development (docker/manage.sh dev): the viewer is served
+  // from source with live reload, and everything outside it - login, DICOMweb,
+  // MONAI Label, Orthanc - goes to the running gateway, so it works exactly
+  // like the deployed page (same login and data).
+  const GATEWAY_PROXY = process.env.GATEWAY_PROXY;
+  if (GATEWAY_PROXY) {
+    mergedConfig.devServer.allowedHosts = 'all'; // opened by the server's IP from other machines
+    mergedConfig.devServer.open = false;
+    mergedConfig.devServer.proxy = [
+      {
+        context: path => !path.startsWith(PUBLIC_URL) && !path.startsWith('/ws'),
+        target: GATEWAY_PROXY,
+        changeOrigin: false,
+        ws: true,
+      },
+    ];
+  }
+
   if (isProdBuild) {
     mergedConfig.plugins.push(
       new MiniCssExtractPlugin({

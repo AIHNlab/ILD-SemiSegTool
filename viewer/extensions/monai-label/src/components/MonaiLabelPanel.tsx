@@ -119,7 +119,7 @@ export default class MonaiLabelPanel extends Component<any, any> {
 
     this.state = {
       info: { models: [], datasets: [] },
-      action: {},
+      action: 'preprocessing', // the section open at start (Preprocessing's defaultChecked)
       options: {},
       busyActions: {},
       // Saves loaded together (Load dialog "Load selected together"):
@@ -543,7 +543,16 @@ export default class MonaiLabelPanel extends Component<any, any> {
     return segmentationService.getSegmentation('1') ? segmentationService.getLabelmapVolume('1') : null;
   };
 
-  onSelectActionTab = (name) => {
+  // The sidebar sections are a radio-button accordion (one open at a time).
+  // A radio can't be unchecked by clicking it again, so clicking the open
+  // section's header closes it here.
+  onSelectActionTab = (name, input?: HTMLInputElement) => {
+    if (input && name === this.state.action) {
+      input.checked = false;
+      this.actions[name]?.current?.onLeaveActionTab();
+      this.setState({ action: null });
+      return;
+    }
     for (const action of Object.keys(this.actions)) {
       if (this.state.action === action) {
         if (this.actions[action].current) {
@@ -789,6 +798,74 @@ export default class MonaiLabelPanel extends Component<any, any> {
   async componentDidMount() {
     this.watchViewports();
     (window as any).ildSegState = () => console.info(this.describeSegmentationState());
+    // Diagnostics for blank/grey images on a particular browser: the decoded
+    // pixel values of the displayed image(s) and volume, logged and sent to
+    // the server log (/monai/client-log).
+    // Diagnostics: switch how images go to the GPU, to find one that works on
+    // a browser that shows blank/grey slices. 'cpu' = no WebGL for images,
+    // 'half' = 16-bit textures (cornerstone preferSizeOverAccuracy),
+    // 'default' = back to normal.
+    (window as any).ildRenderMode = (mode = 'default') => {
+      cornerstone.setUseCPURendering(mode === 'cpu');
+      cornerstone.setPreferSizeOverAccuracy(mode === 'half');
+      for (const engine of cornerstone.getRenderingEngines?.() || []) {
+        engine.render();
+      }
+      return `render mode: ${mode} - if the images don't change, reload the study (keep this tab open)`;
+    };
+    (window as any).ildPixelCheck = () => {
+      const stats = (arr) => {
+        if (!arr || !arr.length) {
+          return null;
+        }
+        let min = Infinity;
+        let max = -Infinity;
+        const step = Math.max(1, Math.floor(arr.length / 200000));
+        for (let i = 0; i < arr.length; i += step) {
+          const v = arr[i];
+          if (v < min) min = v;
+          if (v > max) max = v;
+        }
+        return { type: arr.constructor?.name, length: arr.length, min, max, first: Array.from(arr.slice(0, 6)) };
+      };
+      const out: any = { viewports: [] };
+      for (const engine of cornerstone.getRenderingEngines?.() || []) {
+        for (const vp of engine.getViewports()) {
+          const info: any = { id: vp.id, type: vp.type };
+          try {
+            const imageId = vp.getCurrentImageId?.();
+            info.imageId = imageId?.slice(-60);
+            const image = imageId && cache.getImage(imageId);
+            if (image) {
+              info.image = {
+                ...stats(image.voxelManager?.getScalarData?.() ?? image.getPixelData?.()),
+                slope: image.slope,
+                intercept: image.intercept,
+                minPixel: image.minPixelValue,
+                maxPixel: image.maxPixelValue,
+                rows: image.rows,
+                cols: image.columns,
+              };
+            }
+            const meta = imageId && cornerstone.metaData.get('imagePixelModule', imageId);
+            info.pixelModule = meta && { bits: meta.bitsAllocated, stored: meta.bitsStored, signed: meta.pixelRepresentation, photometric: meta.photometricInterpretation };
+            info.transferSyntax = imageId && cornerstone.metaData.get('transferSyntax', imageId);
+            const volId = vp.getVolumeId?.();
+            const vol = volId && cache.getVolume(volId);
+            if (vol) {
+              info.volume = { dims: vol.dimensions, dataType: vol.dataType, ...stats(vol.voxelManager?.getCompleteScalarDataArray?.()) };
+            }
+            info.voi = vp.getProperties?.()?.voiRange;
+          } catch (e) {
+            info.error = String(e);
+          }
+          out.viewports.push(info);
+        }
+      }
+      console.info('ildPixelCheck', JSON.stringify(out, null, 1));
+      fetch('/monai/client-log', { method: 'POST', body: JSON.stringify({ kind: 'pixelCheck', ua: navigator.userAgent, ...out }) }).catch(() => {});
+      return out;
+    };
     if (this.state.isDataReady) {
       return;
     }

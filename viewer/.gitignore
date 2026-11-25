@@ -54,3 +54,4 @@ platform/app/.recipes/OpenResty-Orthanc/logs/*
 node_modules/
 /blob-report/
 /playwright/.cache/
+platform/app/public/config/ild-dev.js
