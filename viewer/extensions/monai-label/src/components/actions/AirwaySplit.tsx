@@ -4,7 +4,7 @@
 // lib/trachea_carina_pipeline.py); MonaiLabelPanel.splitAirways sends the
 // airway voxels and writes the result back as one undo step.
 
-import React, { forwardRef, useImperativeHandle, useState } from 'react';
+import React, { forwardRef, useImperativeHandle } from 'react';
 import { useActionTab, ActionTabProps } from './useActionTab';
 import { getLabelColor } from '../../utils/GenericUtils';
 import './BaseTab.css';
@@ -58,7 +58,10 @@ function rows(r): [string, string][] {
 const AirwaySplit = forwardRef<any, AirwaySplitProps>((props, ref) => {
   const { isBusy, setBusy, onSplit } = props;
   const { tabId, onSelectActionTab } = useActionTab(props);
-  const [result, setResult] = useState<any>(null);
+  // Kept by MonaiLabelPanel (props.result), so it is saved and loaded with
+  // the segmentation.
+  const result = props.result ?? null;
+  const setResult = (value: any) => props.onResult?.(value);
 
   useImperativeHandle(ref, () => ({
     onEnterActionTab: () => {},

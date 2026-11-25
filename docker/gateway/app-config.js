@@ -29,6 +29,23 @@ const SAFARI_STANDARD_RESOLUTION = true;
   }
 })();
 
+// Phones/tablets (touch screen, no mouse): render the image views at 1 device
+// pixel per CSS pixel. A phone at 2.6x draws ~7x the pixels for little
+// visible gain on a small screen, and the 3D view's cost grows with every
+// pixel - it was slow, and mobile browsers kill the page when the GPU stays
+// busy too long. 2D slices are slightly softer on these devices.
+// Panels and text stay sharp (only the image canvas reads this value).
+(function () {
+  const touchOnly =
+    window.matchMedia && matchMedia('(pointer: coarse)').matches && !matchMedia('(any-pointer: fine)').matches;
+  const MAX_RATIO = 1;
+  if (touchOnly && window.devicePixelRatio > MAX_RATIO) {
+    try {
+      Object.defineProperty(window, 'devicePixelRatio', { get: () => MAX_RATIO, configurable: true });
+    } catch (e) {}
+  }
+})();
+
 // Firefox (and some tablets): CT slices showed as flat grey squares. Where
 // the browser offers EXT_texture_norm16 (Firefox does, Chrome on Mac
 // doesn't), vtk.js stores the 16-bit CT as an R16_SNORM texture and draws it

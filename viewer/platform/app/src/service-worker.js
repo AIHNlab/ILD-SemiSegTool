@@ -1,4 +1,6 @@
-navigator.serviceWorker.getRegistrations().then(function (registrations) {
+// navigator.serviceWorker is missing outside HTTPS/localhost (e.g. a phone on
+// http://<server-ip>) - nothing to unregister there.
+navigator.serviceWorker?.getRegistrations().then(function (registrations) {
   for (let registration of registrations) {
     registration.unregister();
   }

@@ -57,6 +57,12 @@ def nrrd_header_info(path: str) -> Dict[str, Any]:
             info["classes"] = [c["name"] for c in sorted(classes, key=lambda c: c["index"])]
     except (ValueError, KeyError, TypeError):
         pass
+    try:
+        results = json.loads(keys.get("results") or "null")
+        if isinstance(results, dict):
+            info["results"] = results
+    except ValueError:
+        pass
     return info
 
 

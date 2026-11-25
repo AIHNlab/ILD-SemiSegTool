@@ -47,6 +47,11 @@ const { registerColormap } = csUtilities.colormap;
 /**
  *
  */
+// Touch screen and no mouse/trackpad: phones and tablets.
+const isTouchOnly = () =>
+  !!window.matchMedia?.('(pointer: coarse)').matches &&
+  !window.matchMedia?.('(any-pointer: fine)').matches;
+
 export default async function init({
   servicesManager,
   commandsManager,
@@ -68,8 +73,45 @@ export default async function init({
     rendering: {
       ...cornerstone.getConfiguration().rendering,
       strictZSpacingForVolumeViewport: appConfig.strictZSpacingForVolumeViewport,
+      // Touch-only devices (phones, tablets): store the CT on the GPU as
+      // 16-bit floats instead of 32-bit - half the GPU memory (a 512x512x340
+      // CT is ~180 MB instead of ~360 MB). Older phone GPUs crashed on the
+      // full size, after which Chrome blocks WebGL for the site. Exact up to
+      // 2048 HU (lung and soft tissue); only very dense bone/metal is rounded.
+      preferSizeOverAccuracy: isTouchOnly(),
     },
   });
+
+  // Touch-only devices: lighter 3D. Cornerstone samples each 3D ray every
+  // 1/6 voxel, far finer than a phone screen shows, and mobile browsers kill
+  // the page when the GPU stays busy too long (it crashed on a phone). Every
+  // 3D view gets an 8x coarser step there (~1.3 voxels), set as soon as its
+  // volume is attached - before its first frame. (app-config.js also draws at
+  // 1 device pixel per CSS pixel on these devices.)
+  if (isTouchOnly()) {
+    window.addEventListener(
+      cornerstone.Enums.Events.VOLUME_VIEWPORT_NEW_VOLUME,
+      (evt: any) => {
+        const { viewportId, volumeActors } = evt.detail || {};
+        const viewport = cornerstone
+          .getRenderingEngines()
+          .map(engine => engine.getViewport(viewportId))
+          .find(Boolean);
+        if (viewport?.type !== cornerstone.Enums.ViewportType.VOLUME_3D) {
+          return;
+        }
+        for (const { actor } of volumeActors || []) {
+          const mapper = actor?.getMapper?.();
+          const spacing = mapper?.getInputData?.()?.getSpacing?.();
+          if (mapper?.setSampleDistance && spacing) {
+            mapper.setSampleDistance(((spacing[0] + spacing[1] + spacing[2]) / 3) * 1.33);
+            mapper.setMaximumSamplesPerRay?.(600);
+          }
+        }
+      },
+      true // capture: cornerstone's viewport events don't bubble
+    );
+  }
 
   // For debugging large datasets, otherwise prefer the defaults
   const { maxCacheSize } = appConfig;

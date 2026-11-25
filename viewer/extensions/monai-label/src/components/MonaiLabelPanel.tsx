@@ -125,8 +125,19 @@ export default class MonaiLabelPanel extends Component<any, any> {
       // Saves loaded together (Load dialog "Load selected together"):
       // {seriesUID, saves, top} - the panel then offers which one is on top.
       mergedLayers: null,
+      // Each tab's calculated results (its table), by tab name - stored with
+      // a saved segmentation and restored when that save is loaded.
+      results: {},
     };
   }
+
+  setResult = (tab: string, value: any) => {
+    this.setState((prevState: any) => ({ results: { ...prevState.results, [tab]: value } }));
+  };
+
+  // The non-empty results, for a save.
+  savedResults = () =>
+    Object.fromEntries(Object.entries(this.state.results || {}).filter(([, v]) => v != null));
 
   onModelUsed = (model) => {
     this.lastUsedModel = model;
@@ -1124,6 +1135,8 @@ export default class MonaiLabelPanel extends Component<any, any> {
           study_instance_uid: displaySet.StudyInstanceUID,
           series_instance_uid: displaySet.SeriesInstanceUID,
           saved_at: savedAt.toISOString(),
+          // The tabs' result tables (Preprocessing, Airway Split, ...).
+          results: this.savedResults(),
         },
         `save-${savedAt.getTime()}`,
         'label.ildrle'
@@ -1220,6 +1233,7 @@ export default class MonaiLabelPanel extends Component<any, any> {
           tag,
           model: info?.model,
           classes: info?.classes,
+          results: info?.results,
           savedAt: info?.saved_at ? new Date(info.saved_at) : Number.isFinite(ms) ? new Date(ms) : null,
         };
       })
@@ -1276,6 +1290,8 @@ export default class MonaiLabelPanel extends Component<any, any> {
               },
             }
           );
+          // That save's result tables (none for saves made before they were stored).
+          this.setState({ results: save.results || {} });
         } catch (err) {
           this.notification.hide(nid);
           failed('Loading the segmentation', err);
@@ -1557,6 +1573,8 @@ export default class MonaiLabelPanel extends Component<any, any> {
               client={this.client}
               setBusy={(busy: boolean) => this.setBusy('preprocessing', busy)}
               isBusy={!!this.state.busyActions['preprocessing']}
+              result={this.state.results['preprocessing']}
+              onResult={(r) => this.setResult('preprocessing', r)}
               onSelectActionTab={this.onSelectActionTab}
               getActiveViewportInfo={this.getActiveViewportInfo}
             />
@@ -1581,6 +1599,8 @@ export default class MonaiLabelPanel extends Component<any, any> {
               client={this.client}
               setBusy={(busy: boolean) => this.setBusy('airwaysplit', busy)}
               isBusy={!!this.state.busyActions['airwaysplit']}
+              result={this.state.results['airwaysplit']}
+              onResult={(r) => this.setResult('airwaysplit', r)}
               onSelectActionTab={this.onSelectActionTab}
               onSplit={this.splitAirways}
             />
@@ -1593,6 +1613,8 @@ export default class MonaiLabelPanel extends Component<any, any> {
               client={this.client}
               setBusy={(busy: boolean) => this.setBusy('fissures', busy)}
               isBusy={!!this.state.busyActions['fissures']}
+              result={this.state.results['fissures']}
+              onResult={(r) => this.setResult('fissures', r)}
               onSelectActionTab={this.onSelectActionTab}
               onAnalyse={this.analyseFissures}
             />
@@ -1636,6 +1658,8 @@ export default class MonaiLabelPanel extends Component<any, any> {
               client={this.client}
               setBusy={(busy: boolean) => this.setBusy('regionalstats', busy)}
               isBusy={!!this.state.busyActions['regionalstats']}
+              result={this.state.results['regionalstats']}
+              onResult={(r) => this.setResult('regionalstats', r)}
               onSelectActionTab={this.onSelectActionTab}
               getActiveViewportInfo={this.getActiveViewportInfo}
               servicesManager={this.props.servicesManager}

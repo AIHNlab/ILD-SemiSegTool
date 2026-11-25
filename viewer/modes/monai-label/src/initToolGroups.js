@@ -10,14 +10,28 @@ const colorsByOrientation = {
   coronal: 'rgb(0, 200, 0)',
 };
 
+// Touch-only device (phone/tablet, no mouse): there is no wheel to scroll
+// slices, so one finger scrolls them by default (window/level is still one
+// tap away on the toolbar). On every device: two-finger pinch zooms, three
+// fingers pan.
+const isTouchOnly = () =>
+  typeof window !== 'undefined' &&
+  window.matchMedia('(pointer: coarse)').matches &&
+  !window.matchMedia('(any-pointer: fine)').matches;
+
 function createTools(utilityModule) {
   const { toolNames, Enums } = utilityModule.exports;
+  const touchOnly = isTouchOnly();
+  const primary = { mouseButton: Enums.MouseBindings.Primary };
   return {
     active: [
-      { toolName: toolNames.WindowLevel, bindings: [{ mouseButton: Enums.MouseBindings.Primary }] },
-      { toolName: toolNames.Pan, bindings: [{ mouseButton: Enums.MouseBindings.Auxiliary }] },
-      { toolName: toolNames.Zoom, bindings: [{ mouseButton: Enums.MouseBindings.Secondary }] },
-      { toolName: toolNames.StackScroll, bindings: [{ mouseButton: Enums.MouseBindings.Wheel }] },
+      { toolName: toolNames.WindowLevel, bindings: touchOnly ? [] : [primary] },
+      { toolName: toolNames.Pan, bindings: [{ mouseButton: Enums.MouseBindings.Auxiliary }, { numTouchPoints: 3 }] },
+      { toolName: toolNames.Zoom, bindings: [{ mouseButton: Enums.MouseBindings.Secondary }, { numTouchPoints: 2 }] },
+      {
+        toolName: toolNames.StackScroll,
+        bindings: [{ mouseButton: Enums.MouseBindings.Wheel }, ...(touchOnly ? [primary] : [])],
+      },
     ],
     passive: [
       {

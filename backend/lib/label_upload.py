@@ -196,6 +196,12 @@ def rle_to_nrrd(path: str, info: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
         "series_instance_uid": info.get("series_instance_uid") or "",
         "saved_at": info.get("saved_at") or "",
     }
+    # The viewer's result tables (Airway Split, Fissure Analysis, ...), kept
+    # with the save - in the header too, so they survive an index rebuild
+    # (user_datastore.nrrd_header_info).
+    results = info.get("results")
+    if isinstance(results, dict) and results:
+        keys["results"] = json.dumps(results, separators=(",", ":"))
     # Same layout the viewer used to write (SegmentationReader.writeNrrdData):
     # Cornerstone's LPS world space, each direction row scaled by its spacing.
     header = (
@@ -223,4 +229,6 @@ def rle_to_nrrd(path: str, info: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
         "classes": [c["name"] for c in classes],
         "saved_at": keys["saved_at"],
     }
+    if "results" in keys:
+        index_info["results"] = results
     return out, index_info

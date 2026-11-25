@@ -11,7 +11,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-import React, { forwardRef, useImperativeHandle, useState } from 'react';
+import React, { forwardRef, useImperativeHandle } from 'react';
 import { useActionTab, ActionTabProps } from './useActionTab';
 import { hideNotification, describeError } from '../../utils/GenericUtils';
 import './BaseTab.css';
@@ -49,7 +49,10 @@ const Preprocessing = forwardRef<any, ActionTabProps>((props, ref) => {
   const { isBusy, setBusy, getActiveViewportInfo } = props;
   const { notification, tabId, onSelectActionTab } = useActionTab(props);
 
-  const [result, setResult] = useState<any>(null);
+  // Kept by MonaiLabelPanel (props.result), so it is saved and loaded with
+  // the segmentation.
+  const result = props.result ?? null;
+  const setResult = (value: any) => props.onResult?.(value);
 
   // Same no-op transition handling as the other action tabs (e.g.
   // RegionalStats) - MonaiLabelPanel calls these unconditionally when the

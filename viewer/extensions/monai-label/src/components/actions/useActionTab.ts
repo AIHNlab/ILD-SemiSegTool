@@ -34,6 +34,10 @@ export interface ActionTabProps {
   onModelUsed?: (model: string) => void;
   // Creates the segmentation layer if it doesn't exist yet (MonaiLabelPanel).
   ensureSegmentation?: () => Promise<void>;
+  // The tab's calculated results (its table), kept by MonaiLabelPanel so
+  // they are stored with a saved segmentation and come back when it's loaded.
+  result?: any;
+  onResult?: (result: any) => void;
 }
 
 // Shared setup every action tab needs: one notification/modal service

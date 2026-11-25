@@ -4,7 +4,7 @@
 // lib/fissure_analysis.py, using the scripts in lib/lobes_border/);
 // MonaiLabelPanel.analyseFissures sends the lobes and draws the result.
 
-import React, { forwardRef, useImperativeHandle, useState } from 'react';
+import React, { forwardRef, useImperativeHandle } from 'react';
 import { useActionTab, ActionTabProps } from './useActionTab';
 import { getLabelColor } from '../../utils/GenericUtils';
 import './BaseTab.css';
@@ -65,7 +65,10 @@ function resultRows(r): [string, string][] {
 const FissureAnalysis = forwardRef<any, FissureAnalysisProps>((props, ref) => {
   const { isBusy, setBusy, onAnalyse } = props;
   const { tabId, onSelectActionTab } = useActionTab(props);
-  const [result, setResult] = useState<any>(null);
+  // Kept by MonaiLabelPanel (props.result), so it is saved and loaded with
+  // the segmentation.
+  const result = props.result ?? null;
+  const setResult = (value: any) => props.onResult?.(value);
 
   useImperativeHandle(ref, () => ({
     onEnterActionTab: () => {},

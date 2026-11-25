@@ -5,6 +5,8 @@ export type SavedSegmentation = {
   tag: string;
   model?: string;
   classes?: string[];
+  // The tabs' result tables at save time, by tab name (MonaiLabelPanel).
+  results?: Record<string, any>;
   savedAt: Date | null;
 };
 

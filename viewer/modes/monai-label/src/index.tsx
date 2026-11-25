@@ -36,6 +36,10 @@ const extensionDependencies = {
   '@ohif/extension-monai-label': '^3.0.0',
 };
 
+// Phone-sized screen: one large view, side panels start closed (both open
+// with their arrow buttons).
+const isPhone = () => typeof window !== 'undefined' && window.matchMedia('(max-width: 767px)').matches;
+
 function modeFactory({ modeConfiguration }) {
   return {
     /**
@@ -133,8 +137,8 @@ function modeFactory({ modeConfiguration }) {
           return {
             id: ohif.layout,
             props: {
-              rightPanelDefaultClosed: false,
-              /* leftPanelDefaultClosed: true, */
+              rightPanelDefaultClosed: isPhone(),
+              leftPanelDefaultClosed: isPhone(),
               leftPanels: [ohif.leftPanel],
               rightPanels: [monailabel.monaiLabel],
               viewports: [
@@ -155,8 +159,7 @@ function modeFactory({ modeConfiguration }) {
     /** List of extensions that are used by the mode */
     extensions: extensionDependencies,
     /** HangingProtocol used by the mode */
-    hangingProtocol: 'mpr',
-    // hangingProtocol: [''],
+    hangingProtocol: isPhone() ? 'mprSingle' : 'mpr',
     /** SopClassHandlers used by the mode */
     sopClassHandlers: [ohif.sopClassHandler, segmentation.sopClassHandler],
     /** hotkeys for mode */
