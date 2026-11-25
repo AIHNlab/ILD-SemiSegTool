@@ -801,18 +801,11 @@ export default class MonaiLabelPanel extends Component<any, any> {
     // Diagnostics for blank/grey images on a particular browser: the decoded
     // pixel values of the displayed image(s) and volume, logged and sent to
     // the server log (/monai/client-log).
-    // Diagnostics: switch how images go to the GPU, to find one that works on
-    // a browser that shows blank/grey slices. 'cpu' = no WebGL for images,
-    // 'half' = 16-bit textures (cornerstone preferSizeOverAccuracy),
-    // 'default' = back to normal.
-    (window as any).ildRenderMode = (mode = 'default') => {
-      cornerstone.setUseCPURendering(mode === 'cpu');
-      cornerstone.setPreferSizeOverAccuracy(mode === 'half');
-      for (const engine of cornerstone.getRenderingEngines?.() || []) {
-        engine.render();
-      }
-      return `render mode: ${mode} - if the images don't change, reload the study (keep this tab open)`;
-    };
+    // An earlier diagnostic switch (ildRenderMode) saved its choice here -
+    // drop it so no browser stays on a test setting.
+    try {
+      localStorage.removeItem('ildRenderMode');
+    } catch (e) {}
     (window as any).ildPixelCheck = () => {
       const stats = (arr) => {
         if (!arr || !arr.length) {

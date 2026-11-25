@@ -29,6 +29,49 @@ const SAFARI_STANDARD_RESOLUTION = true;
   }
 })();
 
+// Firefox (and some tablets): CT slices showed as flat grey squares. Where
+// the browser offers EXT_texture_norm16 (Firefox does, Chrome on Mac
+// doesn't), vtk.js stores the 16-bit CT as an R16_SNORM texture and draws it
+// with linear filtering - which Firefox doesn't allow for that format, so it
+// draws an empty texture ("texture's format is not texture-filterable").
+// Hiding the extension makes every browser use the 32-bit float texture
+// Chrome uses; that needs OES_texture_float_linear switched on for the
+// context, which is done here too, as soon as a context is created.
+(function () {
+  const original = HTMLCanvasElement.prototype.getContext;
+  const offscreen = typeof OffscreenCanvas !== 'undefined' ? OffscreenCanvas.prototype.getContext : null;
+  const HIDDEN = ['EXT_texture_norm16'];
+  function enable(ctx) {
+    if (ctx && typeof ctx.getExtension === 'function' && !ctx.__ildPatched) {
+      ctx.__ildPatched = true;
+      const getExtension = ctx.getExtension.bind(ctx);
+      const getSupported = ctx.getSupportedExtensions.bind(ctx);
+      ctx.getExtension = function (name) {
+        return HIDDEN.indexOf(name) >= 0 ? null : getExtension(name);
+      };
+      ctx.getSupportedExtensions = function () {
+        return (getSupported() || []).filter(function (n) { return HIDDEN.indexOf(n) < 0; });
+      };
+      ['OES_texture_float_linear', 'EXT_color_buffer_float', 'OES_texture_half_float_linear'].forEach(function (name) {
+        try {
+          getExtension(name);
+        } catch (e) {}
+      });
+    }
+    return ctx;
+  }
+  HTMLCanvasElement.prototype.getContext = function (type) {
+    const ctx = original.apply(this, arguments);
+    return /webgl/i.test(type) ? enable(ctx) : ctx;
+  };
+  if (offscreen) {
+    OffscreenCanvas.prototype.getContext = function (type) {
+      const ctx = offscreen.apply(this, arguments);
+      return /webgl/i.test(type) ? enable(ctx) : ctx;
+    };
+  }
+})();
+
 // Diagnostics: tells the server (backend log, `./manage.sh user-logs <user>`)
 // what this browser can do for image rendering, and reports page errors, so
 // a problem on someone's own device (tablet, another browser) can be found
