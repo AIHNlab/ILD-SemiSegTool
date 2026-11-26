@@ -28,12 +28,22 @@ export default class SettingsTable extends Component {
     // a same-site path ('/monai/'); a plain local run has no such setting
     // and keeps talking to <this host>:8000 directly.
     const configuredUrl = (window as any).config?.monaiLabelServerUrl;
-    const url = CookieUtils.getCookieString(
-      'MONAILABEL_SERVER_URL',
-      configuredUrl
-        ? new URL(configuredUrl, window.location.origin).href
-        : 'http://' + window.location.host.split(':')[0] + ':8000/'
-    );
+    const defaultUrl = configuredUrl
+      ? new URL(configuredUrl, window.location.origin).href
+      : 'http://' + window.location.host.split(':')[0] + ':8000/';
+    let url = CookieUtils.getCookieString('MONAILABEL_SERVER_URL', defaultUrl);
+    // Cookies are shared by every port and by http/https of a host, so the
+    // address saved on http://<ip>:8080 also shows up on https://<ip>:8443 -
+    // where the browser blocks it (mixed content: "Failed to connect").
+    // Behind the gateway the server is always on the page's own origin: a
+    // saved address for another origin is ignored.
+    try {
+      if (configuredUrl && new URL(url, window.location.origin).origin !== window.location.origin) {
+        url = defaultUrl;
+      }
+    } catch (e) {
+      url = defaultUrl;
+    }
     const overlap_segments = CookieUtils.getCookieBool(
       'MONAILABEL_OVERLAP_SEGMENTS',
       true

@@ -467,6 +467,12 @@ EOF
 app_url() {
   local site port host
   site=$(env_get SITE_ADDRESS :80)
+  # A list (":80, https://192.168.1.50"): the HTTPS address is the main one.
+  case "$site" in
+    *,*)
+      site=$(echo "$site" | tr ',' '\n' | sed 's/^ *//; s/ *$//' | grep -m1 '^https://' \
+        || echo "$site" | cut -d, -f1) ;;
+  esac
   case "$site" in
     :*)
       port=$(env_get HTTP_PORT 8080); host=localhost
@@ -492,6 +498,11 @@ show_url() {
   done
   echo
   echo "The app is at:  $url"
+  # HTTPS with the gateway's own certificate (an IP address): each device
+  # trusts it once by installing this certificate.
+  case "$url" in
+    https://[0-9]*) echo "Certificate for devices (install once, then the site is trusted): ${url}ca.crt" ;;
+  esac
   case "$url" in
     http://localhost*)
       ip=$(hostname -I 2>/dev/null | awk '{print $1}')

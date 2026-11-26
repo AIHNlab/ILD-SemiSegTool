@@ -23,6 +23,7 @@ services:
       - "${HTTPS_PORT:-8443}:443"
     environment:
       SITE_ADDRESS: ${SITE_ADDRESS:-:80}
+      TLS_DEFAULT_SNI: ${TLS_DEFAULT_SNI:-localhost}
     volumes:
       - ./gateway/app-config.js:/srv/ohif/app-config.js:ro
       - ${DATA_DIR:-./data}/gateway:/data

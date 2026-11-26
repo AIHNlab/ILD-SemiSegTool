@@ -18,8 +18,8 @@ import * as cornerstoneTools from '@cornerstonejs/tools';
 import { eventTarget, getEnabledElements } from '@cornerstonejs/core';
 import { useActionTab, ActionTabProps } from './useActionTab';
 import { hideNotification, describeError, runStatusUpdater } from '../../utils/GenericUtils';
-import annotationHistory, { renderAllViewports } from '../../utils/AnnotationHistory';
-import { copyLabelmap, presentSegmentValues, sliceArrays, trackModifiedSlices, writeLabelmap } from '../../utils/labelmapAccess';
+import { renderAllViewports } from '../../utils/AnnotationHistory';
+import { copyLabelmap, presentSegmentValues, sliceArrays, trackModifiedSlices } from '../../utils/labelmapAccess';
 
 const SHAPE_TOOLS = {
   point: 'ProbeMONAILabel',
@@ -224,22 +224,8 @@ function activeClassNames(segmentationService, segInfo) {
     .sort((a, b) => a.localeCompare(b));
 }
 
-function forEachFrameOfReference(fn) {
-  const seen = new Set();
-  getEnabledElements().forEach((el) => {
-    const forUID = el?.FrameOfReferenceUID;
-    if (forUID && !seen.has(forUID)) {
-      seen.add(forUID);
-      fn(forUID);
-    }
-  });
-}
-
 function clearPointAnnotations() {
-  forEachFrameOfReference((forUID) =>
-    cornerstoneTools.annotation.state.removeAnnotations('ProbeMONAILabel', forUID)
-  );
-  renderAllViewports();
+  removeToolAnnotations([SHAPE_TOOLS.point]);
 }
 
 // Point/rectangle/freehand prompts (and their exclude shapes) drawn but not
@@ -254,9 +240,20 @@ function clearShapePrompts() {
     EXCLUDE_SHAPE_TOOLS.rectangle,
     EXCLUDE_SHAPE_TOOLS.freehand,
   ];
-  forEachFrameOfReference((forUID) =>
-    toolNames.forEach((toolName) => cornerstoneTools.annotation.state.removeAnnotations(toolName, forUID))
-  );
+  removeToolAnnotations(toolNames);
+}
+
+// Removes every annotation of these tools, wherever it is stored - by its own
+// id, so it doesn't depend on which frame of reference / group it was filed
+// under (looking them up by the viewports' frame of reference missed some).
+function removeToolAnnotations(toolNames: string[]) {
+  const { state } = cornerstoneTools.annotation;
+  const all = state.getAllAnnotations?.() || [];
+  for (const item of all) {
+    if (toolNames.includes(item?.metadata?.toolName) && item.annotationUID) {
+      state.removeAnnotation(item.annotationUID);
+    }
+  }
   renderAllViewports();
 }
 
@@ -264,12 +261,7 @@ function clearShapePrompts() {
 // shape is a one-shot correction to whatever run it was attached to, not a
 // standing marker.
 function clearExcludeAnnotations() {
-  forEachFrameOfReference((forUID) => {
-    Object.values(EXCLUDE_SHAPE_TOOLS).forEach((toolName) => {
-      cornerstoneTools.annotation.state.removeAnnotations(toolName, forUID);
-    });
-  });
-  renderAllViewports();
+  removeToolAnnotations(Object.values(EXCLUDE_SHAPE_TOOLS));
 }
 
 const SemiSegmentation = forwardRef<any, ActionTabProps>((props, ref) => {
@@ -297,6 +289,9 @@ const SemiSegmentation = forwardRef<any, ActionTabProps>((props, ref) => {
   // Classes added with "+ Add class" - listed (even while still empty) until
   // removed with their x or a different segmentation is loaded.
   const [addedLabels, setAddedLabels] = useState<string[]>([]);
+  // Classes taken off the list with their x - their annotation stays in the
+  // segmentation; "+ Add class" lists them again.
+  const [hiddenLabels, setHiddenLabels] = useState<string[]>([]);
   const refreshActiveLabels = () => {
     const names = activeClassNames(servicesManager?.services?.segmentationService, segmentInfo());
     setActiveLabels((prev) => (prev.join('\n') === names.join('\n') ? prev : names));
@@ -791,31 +786,16 @@ const SemiSegmentation = forwardRef<any, ActionTabProps>((props, ref) => {
   const onSegmentationReplaced = () => {
     clearPickedClass();
     setAddedLabels([]);
+    setHiddenLabels([]);
     refreshActiveLabels();
   };
 
-  // The x on a class row: takes the class out of the list. If it has
-  // annotation, that is erased too (after asking; Undo brings it back).
+  // The x on a class row: takes the class off this list only - its
+  // annotation stays in the segmentation (and on the images); "+ Add class"
+  // brings it back.
   const onRemoveClass = (label: string, evt: React.MouseEvent) => {
     evt.stopPropagation();
-    const segIndex = segmentInfo()[label]?.segmentIndex;
-    if (activeLabels.includes(label) && segIndex) {
-      if (!window.confirm(`Remove "${label}"? This erases all of its annotation (Undo brings it back).`)) {
-        return;
-      }
-      const { segmentationService } = servicesManager.services;
-      const volume = segmentationService.getSegmentation('1') ? segmentationService.getLabelmapVolume('1') : null;
-      const data = volume ? copyLabelmap(volume) : null;
-      if (data) {
-        for (let i = 0; i < data.length; i++) {
-          if (data[i] === segIndex) {
-            data[i] = 0;
-          }
-        }
-        annotationHistory.recordReplace(() => writeLabelmap(volume, data), data);
-      }
-      setActiveLabels((prev) => prev.filter((name) => name !== label));
-    }
+    setHiddenLabels((prev) => (prev.includes(label) ? prev : [...prev, label]));
     setAddedLabels((prev) => prev.filter((name) => name !== label));
     if (currentLabel === label) {
       clearPickedClass();
@@ -824,6 +804,7 @@ const SemiSegmentation = forwardRef<any, ActionTabProps>((props, ref) => {
 
   // "+ Add class": list it and pick it.
   const onAddClass = (label: string) => {
+    setHiddenLabels((prev) => prev.filter((name) => name !== label));
     setAddedLabels((prev) => (prev.includes(label) ? prev : [...prev, label]));
     onSelectLabel(label);
   };
@@ -1096,7 +1077,11 @@ const SemiSegmentation = forwardRef<any, ActionTabProps>((props, ref) => {
   // The segmentation's classes, plus the ones added below (even while still
   // empty) and the picked one.
   const labels = Array.from(
-    new Set([...activeLabels, ...addedLabels, ...(currentLabel ? [currentLabel] : [])])
+    new Set([
+      ...activeLabels.filter((name) => !hiddenLabels.includes(name)),
+      ...addedLabels,
+      ...(currentLabel ? [currentLabel] : []),
+    ])
   ).sort((a, b) => a.localeCompare(b));
   const otherLabels = Object.keys(segInfo)
     .filter((name) => segInfo[name].segmentIndex > 0 && !labels.includes(name))
@@ -1150,7 +1135,7 @@ const SemiSegmentation = forwardRef<any, ActionTabProps>((props, ref) => {
                     <td className="annotationRemoveCell">
                       <button
                         className="annotationRemoveClass"
-                        title={activeLabels.includes(label) ? `Remove ${label} (erases its annotation)` : `Remove ${label}`}
+                        title={`Remove ${label} from this list (its annotation stays)`}
                         onClick={(evt) => onRemoveClass(label, evt)}
                       >
                         ×

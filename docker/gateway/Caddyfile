@@ -3,6 +3,12 @@
 # username it returns decides which Orthanc a request goes to.
 {
 	admin off
+	# HTTP stays usable next to HTTPS (SITE_ADDRESS can list both, e.g.
+	# ":80, https://192.168.1.50"): no automatic HTTP -> HTTPS redirect.
+	auto_https disable_redirects
+	# Browsers send no server name (SNI) when the address is an IP: answer
+	# those with this name's certificate (the IP in SITE_ADDRESS).
+	default_sni {$TLS_DEFAULT_SNI}
 }
 
 {$SITE_ADDRESS::80} {
@@ -34,6 +40,28 @@
 		reverse_proxy login:8000
 	}
 
+	# The gateway's own root certificate (HTTPS with an IP address, see
+	# SITE_ADDRESS in .env): installed once on each device so the site is
+	# trusted there - needed e.g. to install the viewer as an app.
+	handle /ca.crt {
+		root * /data/caddy/pki/authorities/local
+		rewrite * /root.crt
+		header Content-Type application/x-x509-ca-cert
+		header Content-Disposition "attachment; filename=ILD-SemiSeg-CA.crt"
+		file_server
+	}
+
+	# The app manifest and its icons are public: browsers fetch them without
+	# the login cookie when offering "Install app" / "Add to home screen".
+	# (No patient data - just the app's name and icons.)
+	@appfiles path /ohif/manifest.json /ohif/assets/*
+	handle @appfiles {
+		uri strip_prefix /ohif
+		root * /srv/ohif
+		header Cache-Control "no-cache"
+		file_server
+	}
+
 	handle {
 		route {
 			# Never trust identity headers coming from the browser.
@@ -48,6 +76,10 @@
 
 			handle / {
 				redir * /ohif/ 302
+			}
+			# /ohif without the slash (typed, or an installed app's link).
+			handle /ohif {
+				redir * /ohif/ 308
 			}
 			# The logged-in username, for the viewer's settings menu.
 			handle /whoami {
