@@ -23,11 +23,11 @@ class NNUNetLobes(TaskConfig):
         self.labels = {LUL: 1, LLL: 2, RUL: 3, RML: 4, RLL: 5}
         # Match the viewer's colors (GenericAnatomyColors.js).
         self.label_colors = {
-            LUL: [30, 80, 200],  # royal blue
-            LLL: [0, 150, 120],  # teal
-            RUL: [220, 120, 0],  # amber
-            RML: [150, 30, 160],  # violet
-            RLL: [190, 20, 60],  # crimson
+            LUL: [160, 160, 0],  # olive
+            LLL: [120, 80, 0],  # brown
+            RUL: [0, 120, 120],  # dark teal
+            RML: [0, 120, 0],  # dark green
+            RLL: [120, 40, 80],  # plum
         }
         self.model_folder = os.path.join(model_dir, MODEL_FOLDER)
 

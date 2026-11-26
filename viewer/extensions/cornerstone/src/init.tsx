@@ -73,12 +73,6 @@ export default async function init({
     rendering: {
       ...cornerstone.getConfiguration().rendering,
       strictZSpacingForVolumeViewport: appConfig.strictZSpacingForVolumeViewport,
-      // Touch-only devices (phones, tablets): store the CT on the GPU as
-      // 16-bit floats instead of 32-bit - half the GPU memory (a 512x512x340
-      // CT is ~180 MB instead of ~360 MB). Older phone GPUs crashed on the
-      // full size, after which Chrome blocks WebGL for the site. Exact up to
-      // 2048 HU (lung and soft tissue); only very dense bone/metal is rounded.
-      preferSizeOverAccuracy: isTouchOnly(),
     },
   });
 

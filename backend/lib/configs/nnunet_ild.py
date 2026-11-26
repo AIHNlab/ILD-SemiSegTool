@@ -14,7 +14,7 @@ class NNUNetILD(TaskConfig):
             "healthy":          [ 76, 175,  80],   # green
             "ggo":              [255, 235,  59],   # yellow
             "reticulation":     [233,  30,  99],   # pink
-            "consolidation":    [244,  67,  54],   # red
+            "consolidation":    [160,   0,   0],   # dark red
             "honeycombing":     [255, 152,   0],   # orange
             "reticulation_ggo": [  0, 188, 212],   # cyan
             "bronchiectasis":   [ 33, 150, 243],   # blue

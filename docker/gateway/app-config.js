@@ -53,7 +53,8 @@ const SAFARI_STANDARD_RESOLUTION = true;
 // draws an empty texture ("texture's format is not texture-filterable").
 // Hiding the extension makes every browser use the 32-bit float texture
 // Chrome uses; that needs OES_texture_float_linear switched on for the
-// context, which is done here too, as soon as a context is created.
+// context, which is done here too, as soon as a context is created (and, on
+// GPUs without it, those textures are sampled nearest-pixel - see below).
 (function () {
   const original = HTMLCanvasElement.prototype.getContext;
   const offscreen = typeof OffscreenCanvas !== 'undefined' ? OffscreenCanvas.prototype.getContext : null;
@@ -69,13 +70,65 @@ const SAFARI_STANDARD_RESOLUTION = true;
       ctx.getSupportedExtensions = function () {
         return (getSupported() || []).filter(function (n) { return HIDDEN.indexOf(n) < 0; });
       };
-      ['OES_texture_float_linear', 'EXT_color_buffer_float', 'OES_texture_half_float_linear'].forEach(function (name) {
+      ['EXT_color_buffer_float', 'OES_texture_half_float_linear'].forEach(function (name) {
         try {
           getExtension(name);
         } catch (e) {}
       });
+      let floatLinear = null;
+      try {
+        floatLinear = getExtension('OES_texture_float_linear');
+      } catch (e) {}
+      if (!floatLinear) {
+        nearestForFloatTextures(ctx);
+      }
     }
     return ctx;
+  }
+  // GPUs that can't smooth 32-bit float textures at all (no
+  // OES_texture_float_linear - e.g. Samsung Xclipse tablets): the CT slices
+  // stayed blank. Such textures are sampled "nearest pixel" instead, which
+  // WebGL always allows - slightly blockier only when zoomed far in. Every
+  // float texture is recorded when its storage is allocated, and smoothing
+  // requests for it are turned into NEAREST.
+  function nearestForFloatTextures(gl) {
+    if (typeof WebGL2RenderingContext === 'undefined' || !(gl instanceof WebGL2RenderingContext)) {
+      return;
+    }
+    const FLOAT_FORMATS = [0x822e, 0x8230, 0x8815, 0x8814]; // R32F, RG32F, RGB32F, RGBA32F
+    const floatTextures = new WeakSet();
+    const BINDING = {};
+    BINDING[gl.TEXTURE_2D] = gl.TEXTURE_BINDING_2D;
+    BINDING[gl.TEXTURE_3D] = gl.TEXTURE_BINDING_3D;
+    BINDING[gl.TEXTURE_2D_ARRAY] = gl.TEXTURE_BINDING_2D_ARRAY;
+    const texParameteri = gl.texParameteri.bind(gl);
+    const bound = function (target) {
+      return BINDING[target] ? gl.getParameter(BINDING[target]) : null;
+    };
+    const isFilter = function (pname) {
+      return pname === gl.TEXTURE_MIN_FILTER || pname === gl.TEXTURE_MAG_FILTER;
+    };
+    ['texImage2D', 'texImage3D', 'texStorage2D', 'texStorage3D'].forEach(function (name) {
+      const fn = gl[name].bind(gl);
+      gl[name] = function (target, a, internalFormat) {
+        const result = fn.apply(null, arguments);
+        if (FLOAT_FORMATS.indexOf(internalFormat) >= 0) {
+          const texture = bound(target);
+          if (texture) {
+            floatTextures.add(texture);
+            texParameteri(target, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+            texParameteri(target, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+          }
+        }
+        return result;
+      };
+    });
+    gl.texParameteri = function (target, pname, param) {
+      if (isFilter(pname) && param !== gl.NEAREST && floatTextures.has(bound(target))) {
+        param = gl.NEAREST;
+      }
+      return texParameteri(target, pname, param);
+    };
   }
   HTMLCanvasElement.prototype.getContext = function (type) {
     const ctx = original.apply(this, arguments);
@@ -87,6 +140,106 @@ const SAFARI_STANDARD_RESOLUTION = true;
       return /webgl/i.test(type) ? enable(ctx) : ctx;
     };
   }
+})();
+
+// Stylus (S Pen, Apple Pencil, ...) on the image views works like a mouse.
+// Browsers deliver a pen as touch, and Cornerstone's brush has no touch
+// support at all (the shape tools behave differently with touch), so a pen
+// couldn't annotate. On the image views the pen's touch events are swallowed
+// and its pointer events re-sent as mouse events: pen down = left button,
+// hovering pen = mouse move (brush outline follows it). Fingers stay touch.
+(function () {
+  const VIEWPORT = '.cornerstone-viewport-element';
+  const onViewport = function (target) {
+    return !!(target && target.closest && target.closest(VIEWPORT));
+  };
+  let penDown = false;
+  let penUpAt = 0;
+  function send(type, e) {
+    const target = document.elementFromPoint(e.clientX, e.clientY) || e.target;
+    target.dispatchEvent(
+      new MouseEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        view: window,
+        clientX: e.clientX,
+        clientY: e.clientY,
+        screenX: e.screenX,
+        screenY: e.screenY,
+        button: 0,
+        buttons: penDown ? 1 : 0,
+        ctrlKey: e.ctrlKey,
+        shiftKey: e.shiftKey,
+        altKey: e.altKey,
+        metaKey: e.metaKey,
+      })
+    );
+  }
+  document.addEventListener(
+    'pointerdown',
+    function (e) {
+      if (e.pointerType !== 'pen' || !onViewport(e.target)) {
+        return;
+      }
+      e.preventDefault();
+      penDown = true;
+      send('mousedown', e);
+    },
+    true
+  );
+  document.addEventListener(
+    'pointermove',
+    function (e) {
+      if (e.pointerType !== 'pen' || (!penDown && !onViewport(e.target))) {
+        return;
+      }
+      e.preventDefault();
+      send('mousemove', e);
+    },
+    true
+  );
+  ['pointerup', 'pointercancel'].forEach(function (type) {
+    document.addEventListener(
+      type,
+      function (e) {
+        if (e.pointerType !== 'pen' || !penDown) {
+          return;
+        }
+        penDown = false;
+        penUpAt = Date.now();
+        send('mouseup', e);
+      },
+      true
+    );
+  });
+  // The pen's own touch events (and the browser's scroll/zoom gestures for
+  // them) must not reach the viewer, or it would act on them twice.
+  ['touchstart', 'touchmove', 'touchend', 'touchcancel'].forEach(function (type) {
+    document.addEventListener(
+      type,
+      function (e) {
+        const touches = Array.prototype.slice.call(e.changedTouches || []);
+        // Browsers that don't mark them as 'stylus': the touches that come
+        // while the pen is down (or right after it lifts) are the pen's.
+        const pen =
+          touches.length &&
+          (touches.every(function (t) { return t.touchType === 'stylus'; }) ||
+            ((penDown || Date.now() - penUpAt < 300) && (e.touches || []).length <= 1));
+        if (pen && (penDown || onViewport(e.target))) {
+          e.stopImmediatePropagation();
+          if (e.cancelable) {
+            e.preventDefault();
+          }
+        }
+      },
+      { capture: true, passive: false }
+    );
+  });
+  // No browser panning/zooming on the image views - the viewer handles
+  // touch gestures itself.
+  const style = document.createElement('style');
+  style.textContent = VIEWPORT + ', ' + VIEWPORT + ' * { touch-action: none; }';
+  (document.head || document.documentElement).appendChild(style);
 })();
 
 // Diagnostics: tells the server (backend log, `./manage.sh user-logs <user>`)

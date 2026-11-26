@@ -1449,6 +1449,9 @@ export default class MonaiLabelPanel extends Component<any, any> {
     // resetBaseline's own comment for why undo shouldn't be able to step
     // back past it to whatever segmentation existed before.
     annotationHistory.installState(() => writeLabelmap(volumeLoadObject, remapped), remapped);
+    // A class picked in Annotation Tools for the previous segmentation
+    // doesn't carry over to this one.
+    this.actions['semisegmentation']?.current?.onSegmentationReplaced?.();
     // The "Merged layers" box only applies to what was just merged.
     this.setState({ mergedLayers });
     this.loadedSaves = loadedTags && displaySet ? { seriesUID: displaySet.SeriesInstanceUID, tags: loadedTags } : null;
@@ -1488,6 +1491,7 @@ export default class MonaiLabelPanel extends Component<any, any> {
       return;
     }
     writeLabelmap(volumeLoadObject, new Uint8Array(width * height * depth));
+    this.actions['semisegmentation']?.current?.onSegmentationReplaced?.();
   };
 
   render() {

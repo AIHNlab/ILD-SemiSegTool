@@ -15,7 +15,7 @@ class NNUNetAirways(TaskConfig):
     def init(self, name, model_dir, conf, planner, **kwargs):
         super().init(name, model_dir, conf, planner, **kwargs)
         self.labels = {"airway": 1}
-        self.label_colors = {"airway": [255, 0, 0]}  # matches the viewer's anatomy colors (GenericAnatomyColors.js)
+        self.label_colors = {"airway": [0, 240, 0]}  # matches the viewer's anatomy colors (GenericAnatomyColors.js)
         self.model_folder = os.path.join(model_dir, MODEL_FOLDER)
 
     def infer(self) -> dict:
