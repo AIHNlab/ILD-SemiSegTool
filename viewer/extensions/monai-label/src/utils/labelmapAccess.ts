@@ -182,6 +182,42 @@ function volume3dViewports(): any[] {
   return viewports;
 }
 
+// 3D view see-through: every class's surface is drawn at surfaceOpacity,
+// except the fissures (always solid) - so with the lobes see-through, their
+// borders and the detected fissures between them can be seen. Applied to each
+// new surface actor (tagSurfaceActors) and to all of them on a change
+// (setSurfaceOpacity); cornerstone never resets an actor's opacity itself.
+let surfaceOpacity = 1;
+const SOLID_CLASS = /fissure/i;
+
+function applySurfaceOpacity(actor, segmentIndex) {
+  const segmentation = cornerstoneTools.segmentation.state.getSegmentation(SEGMENTATION_ID) as any;
+  const label = segmentation?.segments?.[segmentIndex]?.label || '';
+  actor?.getProperty?.()?.setOpacity(SOLID_CLASS.test(label) ? 1 : surfaceOpacity);
+}
+
+const surfaceSegmentIndex = (entry) =>
+  entry.representationUID?.startsWith(SURFACE_UID_PREFIX)
+    ? Number(entry.representationUID.slice(SURFACE_UID_PREFIX.length))
+    : null;
+
+export function getSurfaceOpacity() {
+  return surfaceOpacity;
+}
+
+export function setSurfaceOpacity(value: number) {
+  surfaceOpacity = Math.min(1, Math.max(0.05, value));
+  for (const viewport of volume3dViewports()) {
+    for (const entry of viewport.getActors?.() || []) {
+      const segmentIndex = surfaceSegmentIndex(entry);
+      if (segmentIndex) {
+        applySurfaceOpacity(entry.actor, segmentIndex);
+      }
+    }
+    viewport.render?.();
+  }
+}
+
 // Wraps each 3D viewport's addActor to label new surface actors; removes
 // unlabelled ones left from before (cornerstone rebuilds them, labelled).
 export function tagSurfaceActors() {
@@ -196,6 +232,10 @@ export function tagSurfaceActors() {
           if (segmentIndex) {
             entry = { ...entry, representationUID: `${SURFACE_UID_PREFIX}${segmentIndex}` };
           }
+        }
+        const segmentIndex = entry && surfaceSegmentIndex(entry);
+        if (segmentIndex) {
+          applySurfaceOpacity(entry.actor, segmentIndex);
         }
         return addActor(entry);
       };

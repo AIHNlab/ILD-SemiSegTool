@@ -123,9 +123,11 @@ const Preprocessing = forwardRef<any, ActionTabProps>((props, ref) => {
       </label>
       <div className="tab-content">
         <p style={{ fontSize: 'smaller' }}>
-          Preview only - Auto-Segmentation already resamples to 1mm isotropic spacing and
-          crops to the body bounding box internally before every run, then maps the result
-          back onto this image automatically. Nothing here needs to be run first.
+          Preview only - Auto-Segmentation with <b>nnunet_lung</b> or <b>nnunet_ild</b> (the
+          models trained on preprocessed scans) resamples to 1mm isotropic spacing and crops to
+          the body bounding box internally before every run, then maps the result back onto this
+          image automatically. The other models (lobes, airways) get the original scan. Nothing
+          here needs to be run first.
         </p>
         <button
           className="actionButton preprocessButton"

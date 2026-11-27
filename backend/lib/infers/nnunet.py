@@ -57,11 +57,17 @@ def _load_model(predictor, model_folder, checkpoint="checkpoint_best.pth"):
 
 class NNUNet(BasicInferTask):
     def __init__(self, model_folder, labels, label_colors=None,
-                 checkpoint="checkpoint_best.pth", **kwargs):
+                 checkpoint="checkpoint_best.pth", preprocess=False, **kwargs):
+        """preprocess: feed full-volume runs the 1 mm isotropic + body-crop
+        preprocessing (lib/preprocess.py) - only for models trained on data
+        prepared that way (nnunet_lung, nnunet_ild). Other models (lobes,
+        airways) get the original scan: nnU-Net resamples it to the spacing it
+        was trained on by itself, and a 1 mm detour would only lose detail."""
         super().__init__(path=None, network=None, type="segmentation",
                          labels=labels, dimension=3,
                          description="nnU-Net v2 auto-segmentation", **kwargs)
         self._label_colors = label_colors or {}
+        self._preprocess = preprocess
 
         from nnunetv2.inference.predict_from_raw_data import nnUNetPredictor
         on_gpu = torch.cuda.is_available()
@@ -198,7 +204,8 @@ class NNUNet(BasicInferTask):
                 clip = ex_mask if clip is None else (clip & ex_mask)
 
         # Full-volume runs (no roi/mask_polygon/foreground - the plain
-        # Auto-Segmentation "Run" button) feed nnU-Net the resampled +
+        # Auto-Segmentation "Run" button) of a model with preprocess=True
+        # (nnunet_lung/nnunet_ild) feed nnU-Net the resampled +
         # body-bbox-cropped volume instead of the raw original: nnunet_lung/
         # nnunet_ild were trained on data prepared the same way (see
         # preprocessing/preprocess_test_ct.py's history), so this matches
@@ -224,10 +231,12 @@ class NNUNet(BasicInferTask):
 
             crop_nii = nib.Nifti1Image(crop_arr, crop_affine, header=orig_nii.header)
             nib.save(crop_nii, os.path.join(in_dir, "case_0000.nii.gz"))
-        else:
+        elif self._preprocess:
             from lib.preprocess import preprocess_for_inference
             preprocessed_img, original_img = preprocess_for_inference(image_path)
             sitk.WriteImage(preprocessed_img, os.path.join(in_dir, "case_0000.nii.gz"))
+        else:
+            sitk.WriteImage(sitk.ReadImage(image_path), os.path.join(in_dir, "case_0000.nii.gz"))
 
         # Sequential = no worker processes. predict_from_files() forks preprocessing/
         # export workers from this multi-threaded server; a fork taken while another
@@ -252,6 +261,9 @@ class NNUNet(BasicInferTask):
             pred_arr = np.asanyarray(pred_nii.dataobj).astype(np.uint8)
             arr = np.zeros(orig_nii.shape, dtype=np.uint8)
             arr[xmin:xmax, ymin:ymax, zmin:zmax] = pred_arr
+        elif original_img is None:
+            # Full-volume run on the original scan: already on its grid.
+            arr = sitk.GetArrayFromImage(sitk.ReadImage(result)).astype(np.uint8).transpose(2, 1, 0)
         else:
             # Full-volume run: pred_img is on preprocessed_img's grid: map it
             # back onto the original image's grid before anything else sees

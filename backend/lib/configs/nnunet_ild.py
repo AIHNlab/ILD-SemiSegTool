@@ -25,7 +25,8 @@ class NNUNetILD(TaskConfig):
 
     def infer(self) -> dict:
         return {self.name: NNUNet(self.model_folder, labels=self.labels,
-                                  label_colors=self.label_colors)}
+                                  label_colors=self.label_colors,
+                                  preprocess=True)}  # trained on 1 mm preprocessed scans
 
     def trainer(self):
         return None

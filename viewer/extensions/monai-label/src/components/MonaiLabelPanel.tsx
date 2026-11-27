@@ -474,7 +474,10 @@ export default class MonaiLabelPanel extends Component<any, any> {
   // on the CT and measures them (backend lib/fissure_analysis.py); the
   // detected fissures are drawn over the lobes - one undo step. Resolves to
   // the server's results, or null on failure (reported here).
-  analyseFissures = async () => {
+  // options.isotropic: measure on 0.7 mm cubes (default on - see backend
+  // lib/fissure_analysis.py). The result also records the scan's slice
+  // thickness and reconstruction kernel, for the tab's quality flags.
+  analyseFissures = async (options: { isotropic?: boolean } = {}) => {
     const fail = (message) => {
       this.notification.show({ title: 'Fissure Analysis', message, type: 'error', duration: 10000 });
       return null;
@@ -513,6 +516,7 @@ export default class MonaiLabelPanel extends Component<any, any> {
         spacing: Array.from(volume.spacing),
         direction: Array.from(volume.direction),
         origin: Array.from(volume.origin),
+        isotropic: options.isotropic !== false,
       });
       this.notification.hide(nid);
       if (response?.status !== 200) {
@@ -540,7 +544,18 @@ export default class MonaiLabelPanel extends Component<any, any> {
         meta = null;
       }
       this.notification.show({ title: 'Fissure Analysis', message: 'Fissures detected and measured', type: 'success', duration: 4000 });
-      return meta || {};
+      const first = displaySet.instances?.[0] || {};
+      const kernel = [].concat(first.ConvolutionKernel ?? []).filter((k) => k != null && k !== '').join('\\');
+      const thickness = parseFloat([].concat(first.SliceThickness ?? [])[0]);
+      return {
+        ...(meta || {}),
+        scan: {
+          sliceThicknessMm: Number.isFinite(thickness) ? thickness : volume.spacing[2],
+          sliceSpacingMm: volume.spacing[2],
+          kernel: kernel || null,
+          seriesDescription: displaySet.SeriesDescription || first.SeriesDescription || null,
+        },
+      };
     } catch (e) {
       this.notification.hide(nid);
       return fail(`Could not analyse the fissures: ${describeError(e)}`);

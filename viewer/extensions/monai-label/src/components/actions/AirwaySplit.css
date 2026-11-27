@@ -88,3 +88,28 @@
   height: 10px;
   flex-shrink: 0;
 }
+
+/* Fissure Analysis: the isotropic option, quality flags and the details toggle. */
+.monaiLabelPanel .fissureOption {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 2px 0 4px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.airwayStats .fissureFlag .preprocessStatsLabel,
+.airwayStats .fissureFlag .preprocessStatsValue {
+  color: #f0b54a;
+}
+.monaiLabelPanel .fissureDetailsToggle {
+  display: block;
+  margin: 6px auto 4px;
+  padding: 2px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 4px;
+  background: transparent;
+  color: #5acce6;
+  font-size: 11px;
+  cursor: pointer;
+}
